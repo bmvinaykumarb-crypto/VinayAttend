@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Faculty Login</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="login-page">
+  <div class="login-card">
+    <h2>Faculty Login</h2>
+    <p style="margin:0 0 12px 0; color:rgba(230,238,248,0.8)">Faculty accounts have access to session controls and exports.</p>
+    <form action="faculty_redirect.html" method="post">
+      <div class="form-group">
+        <label style="color:rgba(230,238,248,0.9)">Email</label>
+        <input type="email" name="email" placeholder="professor@college.edu" />
+      </div>
+      <div class="form-group">
+        <label style="color:rgba(230,238,248,0.9)">Password</label>
+        <input type="password" name="password" placeholder="Password" />
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; justify-content:space-between; margin-top:8px;">
+        <button class="btn" type="submit">Sign in</button>
+        <a href="frontend.html" class="link-muted">Back</a>
+      </div>
+    </form>
+  </div>
+</body>
+</html>
