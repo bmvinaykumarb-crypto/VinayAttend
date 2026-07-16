@@ -1,26 +1,3 @@
-# Virtual environments
-.venv/
-.venv-1/
-venv/
-ENV/
-
-# Python cache & compiled files
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-
-# Operating System files
 .DS_Store
-Thumbs.db
-
-# VS Code directory
-.vscode/
-
-# Local logs
-*.log
-
-# Dynamic data stores (avoid conflicts & leaking student data)
-lab_attendance.csv
-student_registry.csv
-qrcodes/

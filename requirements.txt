@@ -1,8 +1,8 @@
 streamlit
 pandas
-opencv-python-headless
-face_recognition
 numpy
-pillow
-scikit-image
+opencv-python
+Pillow
+face-recognition
 qrcode
+dlib

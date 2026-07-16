@@ -1,4 +1,8 @@
-import streamlit as st
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+
 import pandas as pd
 import hashlib
 import time
@@ -9,9 +13,15 @@ import cv2
 import numpy as np
 from io import BytesIO
 from PIL import Image
+import json
+import streamlit as st
 
-# Face recognition check is no longer needed since we use QR code scanning.
-FACE_RECOGNITION_AVAILABLE = False
+try:
+    import face_recognition
+    FACE_RECOGNITION_AVAILABLE = True
+except ImportError:
+    FACE_RECOGNITION_AVAILABLE = False
+
 
 st.set_page_config(page_title="Smart Lab Attendance", layout="wide", page_icon="📝")
 
@@ -43,6 +53,7 @@ if 'show_faculty_login' not in st.session_state:
 
 CSV_FILE = "lab_attendance.csv"
 STUDENT_REGISTRY_FILE = "student_registry.csv"
+REGISTERED_FACES_DIR = "registered_faces"
 
 # Initialize CSV if it doesn't exist
 if not os.path.exists(CSV_FILE):
@@ -51,7 +62,7 @@ if not os.path.exists(CSV_FILE):
 
 # Initialize student registry if it doesn't exist
 if not os.path.exists(STUDENT_REGISTRY_FILE):
-    registry_init = pd.DataFrame(columns=["Roll Number", "Registration Date", "Face Encoding"])
+    registry_init = pd.DataFrame(columns=["Roll Number", "Registration Date", "Face Encoding", "Face Path"])
     registry_init.to_csv(STUDENT_REGISTRY_FILE, index=False)
 
 def load_data():
@@ -76,7 +87,7 @@ def mark_attendance(roll_number, lab):
     existing_count = len(existing_today)
     
     # On Fridays (4) and Saturdays (5), allow up to 2 attendances, otherwise only 1
-    if day_of_week in [4, 5]:  # Friday or Saturday
+    if day_of_week in [4, 6]:  # Friday or Saturday
         max_attendances = 2
     else:
         max_attendances = 1
@@ -98,11 +109,149 @@ def mark_attendance(roll_number, lab):
     return True, f"Successfully marked attendance for {roll_number} in {lab} at {current_time}."
 
 def load_student_registry():
-    return pd.read_csv(STUDENT_REGISTRY_FILE)
+    if not os.path.exists(STUDENT_REGISTRY_FILE):
+        registry_init = pd.DataFrame(columns=["Roll Number", "Registration Date", "Face Encoding", "Face Path"])
+        registry_init.to_csv(STUDENT_REGISTRY_FILE, index=False)
+        return registry_init
+    df = pd.read_csv(STUDENT_REGISTRY_FILE)
+    if "Face Encoding" not in df.columns:
+        df["Face Encoding"] = ""
+    if "Face Path" not in df.columns:
+        df["Face Path"] = ""
+    return df
 
 
 def save_student_registry(df):
     df.to_csv(STUDENT_REGISTRY_FILE, index=False)
+
+
+def serialize_face_encoding(encoding):
+    """Convert numpy array face encoding to JSON string."""
+    if encoding is None:
+        return ""
+    return json.dumps(encoding.tolist())
+
+
+def deserialize_face_encoding(encoding_str):
+    """Convert JSON string back to numpy array face encoding."""
+    if not isinstance(encoding_str, str) or not encoding_str.strip():
+        return None
+    try:
+        return np.array(json.loads(encoding_str))
+    except Exception:
+        return None
+
+
+def calculate_ear(eye_points):
+    """Calculate Eye Aspect Ratio (EAR) for blink detection."""
+    if len(eye_points) < 6:
+        return 0.0
+    p0, p1, p2, p3, p4, p5 = eye_points
+    
+    # Distance between vertical eye landmarks
+    a = np.linalg.norm(np.array(p1) - np.array(p5))
+    b = np.linalg.norm(np.array(p2) - np.array(p4))
+    
+    # Distance between horizontal eye landmarks
+    c = np.linalg.norm(np.array(p0) - np.array(p3))
+    
+    if c == 0:
+        return 0.0
+    
+    return (a + b) / (2.0 * c)
+
+
+def calculate_mar(top_lip, bottom_lip):
+    """Calculate Mouth Aspect Ratio (MAR) for mouth open detection."""
+    if len(top_lip) < 12 or len(bottom_lip) < 12:
+        return 0.0
+    
+    p_left = np.array(top_lip[0])
+    p_right = np.array(top_lip[6])
+    p_top_inner = np.array(top_lip[9])
+    p_bottom_inner = np.array(bottom_lip[9])
+    
+    width = np.linalg.norm(p_left - p_right)
+    vertical = np.linalg.norm(p_top_inner - p_bottom_inner)
+    
+    if width == 0:
+        return 0.0
+    
+    return vertical / width
+
+
+def calculate_yaw_ratio(chin, nose_tip):
+    """Calculate ratio to estimate head yaw (left/right turning)."""
+    if len(chin) < 17 or len(nose_tip) < 5:
+        return 1.0
+    
+    p_left_cheek = chin[0]
+    p_right_cheek = chin[16]
+    p_nose = nose_tip[2]
+    
+    d_left = p_nose[0] - p_left_cheek[0]
+    d_right = p_right_cheek[0] - p_nose[0]
+    
+    if d_right == 0:
+        return 1.0
+        
+    return d_left / d_right
+
+
+def match_face(face_image_file, tolerance=0.55):
+    """
+    Given an uploaded or captured image file, detect the face,
+    compare it against the registered face encodings in the database,
+    and return the matched roll number, or None if no match.
+    """
+    if not FACE_RECOGNITION_AVAILABLE:
+        return None, "Face recognition library is not available."
+    
+    try:
+        # Load image with PIL and convert to numpy array
+        image = Image.open(face_image_file).convert("RGB")
+        image_np = np.array(image)
+        
+        # Find encodings
+        face_encodings = face_recognition.face_encodings(image_np)
+        if not face_encodings:
+            return None, "No face detected in the image. Please make sure your face is clearly visible."
+        if len(face_encodings) > 1:
+            return None, "Multiple faces detected. Please make sure only one person is in the frame."
+        
+        unknown_encoding = face_encodings[0]
+        
+        # Load registry
+        df = load_student_registry()
+        if df.empty:
+            return None, "No students registered in the database."
+        
+        known_encodings = []
+        known_rolls = []
+        
+        for _, row in df.iterrows():
+            enc_str = row.get("Face Encoding", "")
+            enc = deserialize_face_encoding(enc_str)
+            if enc is not None:
+                known_encodings.append(enc)
+                known_rolls.append(str(row["Roll Number"]))
+                
+        if not known_encodings:
+            return None, "No registered face encodings found in the database. Please enroll students first."
+            
+        # Compare faces
+        matches = face_recognition.compare_faces(known_encodings, unknown_encoding, tolerance=tolerance)
+        face_distances = face_recognition.face_distance(known_encodings, unknown_encoding)
+        
+        if True in matches:
+            best_match_idx = np.argmin(face_distances)
+            if matches[best_match_idx]:
+                return known_rolls[best_match_idx], None
+                
+        return None, "Face did not match any registered student in the database."
+    except Exception as e:
+        return None, f"Error processing face: {str(e)}"
+
 
 
 def generate_qr_code_image(roll_number: str):
@@ -128,21 +277,46 @@ def generate_qr_code_image(roll_number: str):
         return img
 
 
-def enroll_student(roll_number):
+def enroll_student(roll_number, face_image_file=None):
     if not roll_number:
         return False, "Roll number cannot be empty."
     df = load_student_registry()
-    if roll_number in df["Roll Number"].astype(str).tolist():
+    if str(roll_number) in df["Roll Number"].astype(str).tolist():
         return False, f"Roll number {roll_number} is already registered."
     
+    serialized_encoding = ""
+    image_path = ""
+    if FACE_RECOGNITION_AVAILABLE:
+        if face_image_file is None:
+            return False, "Face photo is required for enrollment."
+        try:
+            image = Image.open(face_image_file).convert("RGB")
+            image_np = np.array(image)
+            face_encodings = face_recognition.face_encodings(image_np)
+            if not face_encodings:
+                return False, "No face detected in the photo. Please capture/upload a clear picture of your face."
+            if len(face_encodings) > 1:
+                return False, "Multiple faces detected. Please make sure only one person is in the frame."
+            serialized_encoding = serialize_face_encoding(face_encodings[0])
+            
+            # Save the face image to the registered_faces folder
+            os.makedirs(REGISTERED_FACES_DIR, exist_ok=True)
+            image_filename = f"{roll_number}.jpg"
+            image_path = os.path.join(REGISTERED_FACES_DIR, image_filename)
+            image.save(image_path, "JPEG")
+        except Exception as e:
+            return False, f"Failed to process face: {str(e)}"
+            
     new_record = pd.DataFrame([{
         "Roll Number": roll_number,
         "Registration Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "Face Encoding": ""  # Kept empty for schema compatibility
+        "Face Encoding": serialized_encoding,
+        "Face Path": image_path
     }])
     df = pd.concat([df, new_record], ignore_index=True)
     save_student_registry(df)
     return True, f"Student {roll_number} registered successfully! QR Code generated below."
+
 
 
 def decode_qr_code(image_file):
@@ -223,8 +397,270 @@ def auto_scan_qr_from_camera(timeout=12):
     return None, error_msg or "No QR Code detected in the webcam feed."
 
 
+def auto_scan_face_from_camera(timeout=25, tolerance=0.58):
+    """Scan webcam video for a registered face, verify liveness via eye blink, and mark attendance."""
+    if not FACE_RECOGNITION_AVAILABLE:
+        return None, "Face recognition library is not available."
+        
+    df = load_student_registry()
+    if df.empty:
+        return None, "No students registered in the student registry database."
+        
+    known_encodings = []
+    known_rolls = []
+    
+    for _, row in df.iterrows():
+        enc_str = row.get("Face Encoding", "")
+        enc = deserialize_face_encoding(enc_str)
+        if enc is not None:
+            known_encodings.append(enc)
+            known_rolls.append(str(row["Roll Number"]))
+            
+    if not known_encodings:
+        return None, "No registered face encodings found. Please enroll students first."
+        
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        return None, "Unable to open webcam. Please make sure your camera is connected and allowed."
+        
+    start_ts = time.time()
+    matched_roll = None
+    error_msg = None
+    
+    # Create placeholders
+    stframe = st.empty()
+    status_text = st.empty()
+    
+    # Liveness Detection State Variables (Eye Blink Only)
+    liveness_verified = False
+    
+    challenge_timer = time.time()
+    max_seconds_per_challenge = 15.0  # Give 15 seconds to blink
+    
+    face_lost_timestamp = None
+    frame_count = 0
+    face_match_streak = 0
+    required_match_streak = 2
+    
+    # Blink detection tracking state
+    eyes_fully_open = False
+    blink_detected = False
+    blink_count = 0
+    ear_history = []
+    
+    # Metrics display placeholders
+    ear, mar, yaw_ratio = 0.0, 0.0, 1.0
+    open_thresh = 0.25
+    closed_thresh = 0.20
+    
+    while time.time() - start_ts < timeout:
+        ret, frame = cap.read()
+        if not ret:
+            error_msg = "Unable to read from webcam."
+            break
+            
+        frame_count += 1
+        
+        # Mirror the frame horizontally for intuitive self-viewing
+        frame = cv2.flip(frame, 1)
+        
+        # Convert BGR (OpenCV format) to RGB (face_recognition format)
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # Detect face locations
+        face_locations = face_recognition.face_locations(rgb_frame, model="hog")
+        
+        if len(face_locations) == 0:
+            # Face lost tracking
+            if face_lost_timestamp is None:
+                face_lost_timestamp = time.time()
+            elif time.time() - face_lost_timestamp > 4.0:
+                # Reset identification and challenge state only after several seconds of loss
+                matched_roll = None
+                blink_detected = False
+                eyes_fully_open = False
+                ear_history = []
+                challenge_timer = time.time()
+        else:
+            # Face found, reset face lost timestamp
+            face_lost_timestamp = None
+            
+            # Use the first detected face
+            top, right, bottom, left = face_locations[0]
+            
+            # Extract landmarks (extremely fast when passing face_locations)
+            landmarks_list = face_recognition.face_landmarks(rgb_frame, face_locations=[face_locations[0]])
+            
+            if landmarks_list:
+                landmarks = landmarks_list[0]
+                
+                # Extract landmark coordinates
+                left_eye = landmarks.get("left_eye", [])
+                right_eye = landmarks.get("right_eye", [])
+                top_lip = landmarks.get("top_lip", [])
+                bottom_lip = landmarks.get("bottom_lip", [])
+                chin = landmarks.get("chin", [])
+                nose_tip = landmarks.get("nose_tip", [])
+                
+                # Calculate real-time metrics
+                ear_l = calculate_ear(left_eye)
+                ear_r = calculate_ear(right_eye)
+                ear = (ear_l + ear_r) / 2.0
+                mar = calculate_mar(top_lip, bottom_lip)
+                yaw_ratio = calculate_yaw_ratio(chin, nose_tip)
+                
+                # --- STATE MACHINE ---
+                if matched_roll is None:
+                    # Phase 1: Identify Face
+                    face_encodings = face_recognition.face_encodings(rgb_frame, [face_locations[0]])
+                    if face_encodings:
+                        matches = face_recognition.compare_faces(known_encodings, face_encodings[0], tolerance=tolerance)
+                        face_distances = face_recognition.face_distance(known_encodings, face_encodings[0])
+                        if True in matches:
+                            best_match_idx = np.argmin(face_distances)
+                            if matches[best_match_idx]:
+                                matched_roll = known_rolls[best_match_idx]
+                                challenge_timer = time.time()
+                                blink_detected = False
+                                eyes_fully_open = False
+                                ear_history = []
+                elif not liveness_verified:
+                    # Phase 2: Verify Liveness Challenges
+                    elapsed = time.time() - challenge_timer
+                    if elapsed > max_seconds_per_challenge:
+                        matched_roll = None
+                        blink_detected = False
+                        eyes_fully_open = False
+                        ear_history = []
+                        challenge_timer = time.time()
+                        continue
+
+                    ear_history.append(ear)
+                    if len(ear_history) > 25:
+                        ear_history.pop(0)
+
+                    if len(ear_history) >= 10:
+                        sorted_ear = sorted(ear_history)
+                        base_ear = sorted_ear[int(len(sorted_ear) * 0.8)]
+                        open_thresh = min(max(0.20, base_ear * 0.90), 0.32)
+                        closed_thresh = max(min(0.25, base_ear * 0.80), 0.14)
+                    else:
+                        open_thresh = 0.24
+                        closed_thresh = 0.19
+
+                    if ear > open_thresh:
+                        eyes_fully_open = True
+                    if eyes_fully_open and ear < closed_thresh:
+                        blink_detected = True
+                        blink_count += 1
+
+                    reopen_thresh = max(open_thresh - 0.08, closed_thresh + 0.02)
+                    if blink_detected and ear > reopen_thresh:
+                        liveness_verified = True
+                        blink_detected = False
+                        blink_count = 0
+
+                    if not liveness_verified and len(ear_history) >= 8:
+                        min_val = min(ear_history)
+                        min_idx = ear_history.index(min_val)
+                        max_before = max(ear_history[:min_idx]) if min_idx > 0 else min_val
+                        max_after = max(ear_history[min_idx+1:]) if min_idx < len(ear_history) - 1 else min_val
+                        min_open = max(0.22, open_thresh * 0.88)
+                        if (max_before - min_val) > 0.022 and (max_after - min_val) > 0.022 and min_val < min_open:
+                            liveness_verified = True
+            else:
+                # Keep the matched face state when landmarks temporarily disappear during a blink.
+                if matched_roll is not None and not liveness_verified:
+                    if time.time() - challenge_timer > max_seconds_per_challenge:
+                        matched_roll = None
+                        blink_detected = False
+                        eyes_fully_open = False
+                        ear_history = []
+                        challenge_timer = time.time()
+            
+            # --- DRAW HUD ON FRAME ---
+            # Set bounding box color depending on state
+            if liveness_verified:
+                box_color = (0, 255, 0)  # Green
+            elif matched_roll is not None:
+                box_color = (0, 165, 255)  # Orange/Gold
+            else:
+                box_color = (255, 255, 255)  # White
+                
+            # Draw face box
+            cv2.rectangle(frame, (left, top), (right, bottom), box_color, 2)
+            
+            # Draw telemetry landmarks (dots) on eyes to look high-tech
+            if landmarks_list:
+                for eye_pt in left_eye + right_eye:
+                    cv2.circle(frame, eye_pt, 2, (0, 255, 255), -1)  # Yellow dots on eyes
+                    
+        # --- SEMI-TRANSPARENT TOP & BOTTOM HUD BANDS ---
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (0, 0), (frame.shape[1], 55), (15, 15, 15), -1)
+        cv2.rectangle(overlay, (0, frame.shape[0] - 90), (frame.shape[1], frame.shape[0]), (15, 15, 15), -1)
+        cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
+        
+        # Write Title and Status on Top Bar
+        if liveness_verified:
+            status_title = "LIVENESS VERIFIED"
+            status_color = (0, 255, 0)  # Green
+        elif matched_roll is not None:
+            status_title = f"IDENTIFIED: STUDENT {matched_roll}"
+            status_color = (0, 165, 255)  # Orange
+        else:
+            status_title = "SCANNING FOR REGISTERED FACE..."
+            status_color = (255, 255, 0)  # Cyan
+            
+        cv2.putText(frame, status_title, (15, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.65, status_color, 2, cv2.LINE_AA)
+        
+        # Write Live Telemetry on the Right Side
+        cv2.putText(frame, f"EAR: {ear:.2f}", (frame.shape[1] - 110, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"MAR: {mar:.2f}", (frame.shape[1] - 110, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"YAW: {yaw_ratio:.2f}", (frame.shape[1] - 110, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+        
+        # Write Challenge Checklist on Bottom Bar
+        if matched_roll is None:
+            cv2.putText(frame, "Position your face clearly in the camera feed.", (15, frame.shape[0] - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1, cv2.LINE_AA)
+            cv2.putText(frame, "Verification will begin automatically upon matching.", (15, frame.shape[0] - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 150), 1, cv2.LINE_AA)
+        else:
+            # Challenges status
+            c_status = "[ OK ]" if liveness_verified else f"[ACTIVE ({max_seconds_per_challenge - (time.time() - challenge_timer):.1f}s)]"
+            c_color = (0, 255, 0) if liveness_verified else (0, 165, 255)
+            
+            cv2.putText(frame, f"Liveness Check: Blink your eyes -> {c_status}", (15, frame.shape[0] - 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, c_color, 1, cv2.LINE_AA)
+            cv2.putText(frame, f"EAR Telemetry: current={ear:.2f} | target closed<{closed_thresh:.2f}", (15, frame.shape[0] - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 1, cv2.LINE_AA)
+            
+            if not liveness_verified and blink_detected:
+                cv2.putText(frame, "Eyes closed... Open them!", (frame.shape[1] - 200, frame.shape[0] - 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
+                
+        # Display the frame in Streamlit
+        display_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        stframe.image(display_rgb)
+        
+        # Display messages in Streamlit status_text
+        if liveness_verified:
+            status_text.success(f"✅ Match & Liveness Verified: Student {matched_roll}")
+            time.sleep(2.0)
+            break
+        elif matched_roll is not None:
+            status_text.warning("🔒 Liveness Challenge: Please blink your eyes!")
+        else:
+            status_text.info("📷 Scanning... Position your face clearly in front of the camera.")
+            
+        time.sleep(0.01)
+        
+    cap.release()
+    stframe.empty()
+    status_text.empty()
+    
+    if liveness_verified and matched_roll:
+        return matched_roll, None
+    return None, error_msg or "Liveness verification failed or timed out."
+
+
 def play_siri_voice(success, roll_number=""):
-    """Play Siri voice note based on success/failure"""
+    """Play siri voice note based on success/failure"""
     try:
         import platform
         import os
@@ -233,9 +669,9 @@ def play_siri_voice(success, roll_number=""):
             roll_str = str(roll_number).replace('"', '').replace("'", "")
             prefix = f"{roll_str}, " if roll_str else ""
             if success:
-                os.system(f'say -v alexa "{prefix}your attendance is successfully recorded." &')
+                os.system(f'say -v siri "{prefix}your attendance is successfully recorded." &')
             else:
-                os.system(f'say -v alexa "{prefix}failed to record attendance." &')
+                os.system(f'say -v siri "{prefix}failed to record attendance." ')
     except Exception:
         pass
 
@@ -294,31 +730,16 @@ if st.session_state.redirecting:
     
     st.markdown(
         f"""
-        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 80vh; text-align: center; font-family: 'Inter', sans-serif;">
-            <div class="login-card" style="width: 450px; max-width: 90%; padding: 40px; border-radius: 20px; text-align: center; background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); border: 1px solid rgba(255,255,255,0.04); box-shadow: 0 30px 80px rgba(2,6,23,0.7);">
-                <div style="margin-bottom: 20px; font-size: 3.5rem;">🔑</div>
-                <h2 style="color: #a5f3fc; text-shadow: 0 0 20px rgba(56, 189, 248, 0.3); font-weight: 800; font-size: 1.8rem; margin: 0 0 10px 0;">Signing in...</h2>
-                <p style="color: rgba(230,238,248,0.8); margin-top: 10px; font-size: 1.1rem;">Welcome — redirecting {role_title} to attendance page...</p>
-                <div style="margin-top: 30px; display: flex; justify-content: center;">
-                    <div class="loader"></div>
+        <div class="login-page" style="min-height: 80vh;">
+            <div class="login-card" style="text-align: center;">
+                <div style="font-size: 3.5rem; margin-bottom: 12px; filter: drop-shadow(var(--glow-indigo));">🔑</div>
+                <h2>Signing in...</h2>
+                <p style="color: var(--text-secondary); margin: 8px 0 0 0; font-size: 0.95rem;">Welcome — redirecting {role_title} to attendance page...</p>
+                <div class="loader-container">
+                    <div class="futuristic-loader"></div>
                 </div>
             </div>
         </div>
-        <style>
-            .loader {{
-                border: 4px solid rgba(255, 255, 255, 0.05);
-                width: 50px;
-                height: 50px;
-                border-radius: 50%;
-                border-left-color: #38bdf8;
-                border-top-color: #667eea;
-                animation: spin 0.8s cubic-bezier(0.5, 0, 0.5, 1) infinite;
-            }}
-            @keyframes spin {{
-                0% {{ transform: rotate(0deg); }}
-                100% {{ transform: rotate(360deg); }}
-            }}
-        </style>
         """,
         unsafe_allow_html=True
     )
@@ -334,7 +755,7 @@ else:
     # Render Application dashboard (student by default, faculty if logged in)
     col_logo, col_faculty_btn = st.columns([5, 1])
     with col_logo:
-        st.markdown("<h1 style='margin:0; font-size: 2.2rem; display: flex; align-items: center;'>📝 Smart Lab Attendance</h1>", unsafe_allow_html=True)
+        st.markdown("<h1 style='margin:0; font-size: 2.2rem; display: flex; align-items: center;'><span class='text-neon-cyan'>📝 Smart Lab Attendance</span></h1>", unsafe_allow_html=True)
     with col_faculty_btn:
         st.markdown("<div style='padding-top: 8px;'></div>", unsafe_allow_html=True)
         if st.session_state.user_role == "student":
@@ -371,23 +792,13 @@ else:
                 st.session_state.show_faculty_login = False
                 st.rerun()
         
-        st.markdown(
-            """
-            <div style="background: rgba(255,255,255,0.06); padding: 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.12); margin-top: 10px;">
-                <span style="color: #38bdf8; font-weight: 700; font-size: 0.9rem;">💡 Testing Info:</span><br/>
-                <span style="color: #dadde3; font-size: 0.85rem;">Email: <b style="color: #ffffff;">faculty@college.edu</b></span><br/>
-                <span style="color: #dadde3; font-size: 0.85rem;">Password: <b style="color: #ffffff;">faculty123</b></span>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
         st.markdown("---")
             
     st.markdown(
         """
-        <div class="hero" style="margin-top: 15px; padding: 1.5rem; border-radius: 20px; background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(148, 163, 184, 0.12);">
-            <h2 style="color: #38bdf8 !important; text-shadow: none; font-size: 1.4rem; margin-top: 0; margin-bottom: 8px; font-weight: 700;">Secure Attendance Dashboard</h2>
-            <p style="margin-bottom: 0; color: #cbd5e1; font-size: 0.95rem; line-height: 1.6;">Scan QR codes using your camera feed, manage student registers, and export reports directly from your secure session.</p>
+        <div class="hero" style="margin-top: 15px;">
+            <h2>Secure Attendance Dashboard</h2>
+            <p>Scan QR codes using your camera feed, manage student registers, and export reports directly from your secure session.</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -406,83 +817,154 @@ else:
     
     st.divider()    # Configure tabs based on user role
     if st.session_state.user_role == "student":
-        tab_list = ["QR Code Scanner Attendance", "My QR Code"]
+        tab_list = ["👤 Face & QR Attendance", "👤 Register My Face", "📇 My QR Code"]
     else:
-        tab_list = ["QR Code Scanner Attendance", "View Records", "Manage Students & QR Codes"]
+        tab_list = ["👤 Face & QR Attendance", "📊 View Records", "🧑‍🎓 Manage Students & Faces"]
         
     tabs = st.tabs(tab_list)
     
     with tabs[0]:
-        st.header("📷 QR Code Scanner Attendance")
-        lab_choice = st.radio("Select Subject:", ["Python", "Operating System", "Computer Graphics", "DataStructure", "Cpp", "DBMS", "DigitalLogics", "JAVA", "WebDesigen", "C Programing","R Programing"], horizontal=True)
-        st.markdown("<div class='section-note'>Select the correct lab subject first, then present your QR Code to the camera or upload a QR image for attendance marking.</div>", unsafe_allow_html=True)
+        st.header("👤 Face & QR Scanner Attendance")
+        # Initialize selected_subject in session state if not already set
+        if 'selected_subject' not in st.session_state:
+            st.session_state.selected_subject = "C Programing"
+
+        # Define subjects hierarchy
+        subjects_by_year_sem = {
+            "1st Year": {
+                "1st Sem": ["C Programing", "DigitalLogics", "C.prog"],
+                "2nd Sem": ["Cpp", "DataStructure"]
+            },
+            "2nd Year": {
+                "3rd Sem": ["DBMS", "JAVA", "WebDesigen"],
+                "4th Sem": ["Python", "Operating System", "Computer Graphics"]
+            },
+            "3rd Year": {
+                "5th Sem": ["R Programing", "MAD"],
+                "6th Sem": ["WCMS"]
+            }
+        }
+
+        # 3 columns for 1st Year, 2nd Year, 3rd Year
+        cols = st.columns(3)
+        years = ["1st Year", "2nd Year", "3rd Year"]
+
+        for idx, yr in enumerate(years):
+            with cols[idx]:
+                st.markdown(f"<div style='text-align: center; font-weight: bold; font-size: 1.1em; color: var(--text-primary); margin-bottom: 8px;'>📅 {yr}</div>", unsafe_allow_html=True)
+                for sem, subs in subjects_by_year_sem[yr].items():
+                    st.markdown(f"<div style='font-size: 0.9em; color: var(--text-secondary); margin-top: 5px; margin-bottom: 2px; font-weight: 600;'>{sem}</div>", unsafe_allow_html=True)
+                    for sub in subs:
+                        is_selected = (st.session_state.selected_subject == sub)
+                        btn_label = f"✅ {sub}" if is_selected else f"📄 {sub}"
+                        if st.button(
+                            btn_label, 
+                            key=f"btn_sel_{yr}_{sem}_{sub}", 
+                            use_container_width=True, 
+                            type="primary" if is_selected else "secondary"
+                        ):
+                            st.session_state.selected_subject = sub
+                            st.rerun()
+
+        lab_choice = st.session_state.selected_subject
+        st.markdown("<div class='section-note'>Select the correct lab subject first, then use your face or QR Code to verify and mark attendance.</div>", unsafe_allow_html=True)
         
         st.divider()
         
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader("📷 Automatic QR Code Scanner")
-            st.write("Use your webcam for automatic QR Code scanning and attendance marking.")
-
-            auto_scan_mode = st.checkbox(
-                "Enable automatic QR scanner",
-                value=st.session_state.auto_scan_active,
-                key="auto_scan_active",
-                help="Present your printed/digital QR code to the webcam to mark attendance."
-            )
-
-            if auto_scan_mode:
-                st.info("🎥 Scanning from your webcam. Present your QR Code clearly.")
-                roll_number, err = auto_scan_qr_from_camera(timeout=12)
-                if roll_number:
-                    registry = load_student_registry()
-                    registered_rolls = registry["Roll Number"].astype(str).tolist()
-                    if not registered_rolls or roll_number in registered_rolls:
-                        success, msg = mark_attendance(roll_number, lab_choice)
-                    else:
-                        success = False
-                        msg = f"Student '{roll_number}' is not registered in the student database. Register them first."
-                    
-                    if success:
-                        play_siri_voice(True, roll_number)
-                        st.balloons()
-                        show_scan_popup(True, msg, roll_number)
-                    else:
-                        play_siri_voice(False, roll_number)
-                        show_scan_popup(False, msg, roll_number)
-                elif err:
-                    st.error(f"QR Scanning failed: {err}")
-
-            st.markdown("---", unsafe_allow_html=True)
-            st.write("Manual upload / capture:")
-            qr_file = st.file_uploader("Upload QR Code image:", type=["png", "jpg", "jpeg"], key="qr_file_uploader")
-            st.write("--- or ---")
-            st.write("Use Camera Capture:")
-            qr_camera = st.camera_input("Capture QR snapshot:", key="qr_camera_input")
+            method = st.radio("Verification Method:", ["Face Recognition", "QR Code Scanner"], horizontal=True, key="attendance_method_radio")
             
-            scanned_file = qr_file or qr_camera
-            if scanned_file is not None:
-                roll_number, err = decode_qr_code(scanned_file)
-                if roll_number:
-                    registry = load_student_registry()
-                    registered_rolls = registry["Roll Number"].astype(str).tolist()
-                    if not registered_rolls or roll_number in registered_rolls:
-                        success, msg = mark_attendance(roll_number, lab_choice)
-                    else:
-                        success = False
-                        msg = f"Student '{roll_number}' is not registered in the student database. Register them first."
-                    if success:
-                        play_siri_voice(True, roll_number)
-                        st.balloons()
-                        show_scan_popup(True, msg, roll_number)
-                    else:
-                        play_siri_voice(False, roll_number)
-                        show_scan_popup(False, msg, roll_number)
+            if method == "Face Recognition":
+                st.subheader("👤 Secure Face Attendance Scanner")
+                if not FACE_RECOGNITION_AVAILABLE:
+                    st.warning("⚠️ Face recognition is not available. Please install 'face_recognition' library or use QR Code mode.")
                 else:
-                    st.error(f"QR Decoding failed: {err}")
+                    st.markdown("""
+                    <div class='section-note' style='border-left-color: #10b981; background: rgba(16, 185, 129, 0.05); margin-bottom: 15px; padding: 12px; border-radius: 8px;'>
+                        <strong>🛡️ Liveness Detection Protocol:</strong> The face recognition scanner requires you to blink your eyes to verify that you are a live person. Static photos or device screen displays will be rejected.
+                    </div>
+                    """, unsafe_allow_html=True)
                     
+                    if st.button("📷 Start Live Face Scanner", key="start_live_face_scanner_btn", type="primary", use_container_width=True):
+                        st.info("🎥 Starting camera feed... Please look directly at the webcam.")
+                        roll_number, err = auto_scan_face_from_camera(timeout=25)
+                        if roll_number:
+                            success, msg = mark_attendance(roll_number, lab_choice)
+                            if success:
+                                play_siri_voice(True, roll_number)
+                                st.balloons()
+                                show_scan_popup(True, msg, roll_number)
+                            else:
+                                play_siri_voice(False, roll_number)
+                                show_scan_popup(False, msg, roll_number)
+                            st.rerun()
+                        elif err:
+                            st.error(f"Face verification failed: {err}")
+                            
+            else:
+                st.subheader("📷 Automatic QR Code Scanner")
+                st.write("Use your webcam for automatic QR Code scanning and attendance marking.")
+
+                auto_scan_mode = st.checkbox(
+                    "Enable automatic QR scanner",
+                    value=st.session_state.auto_scan_active,
+                    key="auto_scan_active",
+                    help="Present your printed/digital QR code to the webcam to mark attendance."
+                )
+
+                if auto_scan_mode:
+                    st.info("🎥 Scanning from your webcam. Present your QR Code clearly.")
+                    roll_number, err = auto_scan_qr_from_camera(timeout=12)
+                    if roll_number:
+                        registry = load_student_registry()
+                        registered_rolls = registry["Roll Number"].astype(str).tolist()
+                        if not registered_rolls or roll_number in registered_rolls:
+                            success, msg = mark_attendance(roll_number, lab_choice)
+                        else:
+                            success = False
+                            msg = f"Student '{roll_number}' is not registered in the student database. Register them first."
+                        
+                        if success:
+                            play_siri_voice(True, roll_number)
+                            st.balloons()
+                            show_scan_popup(True, msg, roll_number)
+                        else:
+                            play_siri_voice(False, roll_number)
+                            show_scan_popup(False, msg, roll_number)
+                    elif err:
+                        st.error(f"QR Scanning failed: {err}")
+
+                st.markdown("---", unsafe_allow_html=True)
+                st.write("Manual upload / capture:")
+                qr_file = st.file_uploader("Upload QR Code image:", type=["png", "jpg", "jpeg"], key="qr_file_uploader")
+                st.write("--- or ---")
+                st.write("Use Camera Capture:")
+                qr_camera = st.camera_input("Capture QR snapshot:", key="qr_camera_input")
+                
+                scanned_file = qr_file or qr_camera
+                if scanned_file is not None:
+                    roll_number, err = decode_qr_code(scanned_file)
+                    if roll_number:
+                        registry = load_student_registry()
+                        registered_rolls = registry["Roll Number"].astype(str).tolist()
+                        if not registered_rolls or roll_number in registered_rolls:
+                            success, msg = mark_attendance(roll_number, lab_choice)
+                        else:
+                            success = False
+                            msg = f"Student '{roll_number}' is not registered in the student database. Register them first."
+                        if success:
+                            play_siri_voice(True, roll_number)
+                            st.balloons()
+                            show_scan_popup(True, msg, roll_number)
+                        else:
+                            play_siri_voice(False, roll_number)
+                            show_scan_popup(False, msg, roll_number)
+                    else:
+                        st.error(f"QR Decoding failed: {err}")
+                        
         with col2:
-            st.subheader("Manual Attendance")
+            st.subheader("Manual Attendance (Faculty Bypass)")
             if st.session_state.user_role == "student":
                 roll_input = st.text_input("Your Roll Number:", value=st.session_state.username, disabled=True, key="manual_roll")
             else:
@@ -514,6 +996,33 @@ else:
  
     if st.session_state.user_role == "student":
         with tabs[1]:
+            st.header("👤 Register My Face")
+            st.write("Capture or upload a photo of your face to register in the student database.")
+            
+            student_roll = st.text_input("Confirm Your Roll Number:", value=st.session_state.username if st.session_state.username != "Student" else "", key="student_roll_face_reg")
+            
+            st.write("Capture Face:")
+            std_face_cam = st.camera_input("Capture snapshot", key="student_face_cam")
+            st.write("--- or ---")
+            std_face_upload = st.file_uploader("Upload photo of your face:", type=["png", "jpg", "jpeg"], key="student_face_upload")
+            
+            std_face_img = std_face_cam or std_face_upload
+            
+            if st.button("Register My Face", type="primary", key="student_register_face_btn"):
+                roll_clean = student_roll.strip()
+                if not roll_clean:
+                    st.warning("Please confirm your Roll Number.")
+                elif std_face_img is None:
+                    st.warning("Please capture or upload a face picture.")
+                else:
+                    success, msg = enroll_student(roll_clean, std_face_img)
+                    if success:
+                        st.success(msg)
+                        st.balloons()
+                    else:
+                        st.error(msg)
+                        
+        with tabs[2]:
             st.header("📇 Get My QR Code")
             st.write("Generate and download your personalized attendance QR Code.")
             
@@ -538,11 +1047,11 @@ else:
                     st.warning("Please enter a valid Roll Number.")
                     
             st.divider()
-            st.subheader("How to use QR Code Attendance")
+            st.subheader("How to use Face & QR Code Attendance")
             st.markdown("""
-            - **Generate QR Code**: Enter your Roll Number and generate/download your personalized QR code.
-            - **Scan or Upload**: Present your QR code to the webcam on the attendance page, or upload the saved image.
-            - **Mark Attendance**: The system instantly reads the code, validates your roll number, and records your attendance.
+            - **Register Face**: Navigate to the `Register My Face` tab and capture/upload your face photo.
+            - **Generate QR Code**: Download your personalized QR code as a secondary verification option.
+            - **Mark Attendance**: Use either Face Recognition or QR Code Scanner to instantly verify your identity and mark attendance.
             """)
     else:
         with tabs[1]:
@@ -561,7 +1070,7 @@ else:
             )
         
         with col_filter:
-            filter_lab = st.selectbox("Filter by Subject", ["All", "Python", "Operating System", "Computer Graphics", "DataStructure", "Cpp", "DBMS", "DigitalLogics", "JAVA", "WebDesigen", "C Programing"])
+            filter_lab = st.selectbox("Filter by Subject", ["All", "Python", "Operating System", "Computer Graphics", "DataStructure", "Cpp", "DBMS", "DigitalLogics", "JAVA", "WebDesigen", "C Programing", "R Programing", "C.prog", "MAD", "WCMS"])
         
         # Convert selected_date to string format for comparison
         selected_date_str = selected_date.strftime("%Y-%m-%d")
@@ -702,7 +1211,7 @@ else:
         with st.expander("📋 View All Records (Historical View)", expanded=False):
             st.markdown("### Complete Attendance History")
             
-            filter_lab_all = st.selectbox("Filter by Subject (All Records)", ["All", "Python", "Operating System", "Computer Graphics", "DataStructure", "Cpp", "DBMS", "DigitalLogics", "JAVA", "WebDesigen", "C Programing"], key="filter_all")
+            filter_lab_all = st.selectbox("Filter by Subject (All Records)", ["All", "Python", "Operating System", "Computer Graphics", "DataStructure", "Cpp", "DBMS", "DigitalLogics", "JAVA", "WebDesigen", "C Programing", "R Programing", "C.prog", "MAD", "WCMS"], key="filter_all")
             
             if filter_lab_all != "All":
                 original_display_df = df[df["Lab"] == filter_lab_all]
@@ -731,15 +1240,28 @@ else:
                         st.dataframe(date_records[["Roll Number", "Time", "Lab"]], width='stretch', hide_index=True)
         
         with tabs[2]:
-            st.header("🧑‍🎓 Student QR Code Registry")
-            st.markdown("<div class='section-note'>Register new student Roll Numbers, list all registered students, and generate/download their personalized QR codes.</div>", unsafe_allow_html=True)
+            st.header("🧑‍🎓 Student Face & QR Registry")
+            st.markdown("<div class='section-note'>Register new student Roll Numbers along with their Face photo, list all registered students, and generate/download their personalized QR codes.</div>", unsafe_allow_html=True)
             
             st.subheader("Enroll New Student")
             enroll_roll = st.text_input("Enter Student Roll Number:", key="enroll_roll")
-            if st.button("Register Student & Generate QR Code", type="primary", key="enroll_student_btn"):
+            
+            fac_image = None
+            if FACE_RECOGNITION_AVAILABLE:
+                st.write("Student Face Photo (Required):")
+                fac_cam = st.camera_input("Capture Student Face", key="fac_enroll_cam")
+                st.write("--- or ---")
+                fac_upload = st.file_uploader("Upload Student Face Photo:", type=["png", "jpg", "jpeg"], key="fac_enroll_upload")
+                fac_image = fac_cam or fac_upload
+
+            if st.button("Register Student & Save Face", type="primary", key="enroll_student_btn"):
                 roll_clean = enroll_roll.strip()
-                if roll_clean:
-                    success, message = enroll_student(roll_clean)
+                if not roll_clean:
+                    st.warning("Please enter a valid Roll Number.")
+                elif FACE_RECOGNITION_AVAILABLE and fac_image is None:
+                    st.warning("Please capture or upload a face photo for the student.")
+                else:
+                    success, message = enroll_student(roll_clean, fac_image)
                     if success:
                         st.success(message)
                         st.balloons()
@@ -760,8 +1282,6 @@ else:
                         )
                     else:
                         st.error(message)
-                else:
-                    st.warning("Please enter a valid Roll Number.")
             
             st.divider()
             st.subheader("Registered Students List")
@@ -770,7 +1290,16 @@ else:
                 st.write(f"Total registered students: **{len(registry_df)}**")
                 
                 display_df = registry_df.copy()
-                st.dataframe(display_df, width='stretch', hide_index=True)
+                if "Face Encoding" in display_df.columns:
+                    display_df["Face Registered"] = display_df["Face Encoding"].apply(
+                        lambda x: "🟢 Registered" if isinstance(x, str) and len(x.strip()) > 10 else "🔴 Missing"
+                    )
+                    display_columns = ["Roll Number", "Registration Date", "Face Registered"]
+                    if "Face Path" in display_df.columns:
+                        display_columns.append("Face Path")
+                    st.dataframe(display_df[display_columns], width='stretch', hide_index=True)
+                else:
+                    st.dataframe(display_df, width='stretch', hide_index=True)
                 
                 # Individual QR Code dropdown generator
                 st.subheader("View/Download Existing Student QR Code")
