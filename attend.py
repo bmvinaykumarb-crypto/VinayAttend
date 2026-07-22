@@ -55,7 +55,7 @@ lon = location['coords']['longitude']
 within_range, distance = is_within_range(lat, lon)
 
 if not within_range:
-    st.error(f"❌ You are {distance:.0f}m away from college. Attendance can only be marked within {ALLOWED_RADIUS_METERS}m.")
+    st.error(f"❌ You are {distance:.0f}m  u are fare away from VNC BCA(block) college. Attendance can only be marked within this area {ALLOWED_RADIUS_METERS}m.")
     st.stop()
 else:
     st.success(f"✅ Location verified ({distance:.0f}m from college)")
