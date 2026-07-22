@@ -4,6 +4,16 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+from streamlit_js_eval import get_geolocation
+from geopy.distance import geodesic
+
+COLLEGE_LOCATION = (15.274181832329022, 76.37778413493287)
+ALLOWED_RADIUS_METERS = 30
+
+def is_within_range(lat, lon):
+    distance = geodesic(COLLEGE_LOCATION, (lat, lon)).meters
+    return distance <= ALLOWED_RADIUS_METERS, distance
+
 import pandas as pd
 import hashlib
 import time
@@ -31,6 +41,24 @@ def load_static_file(filename: str) -> str:
     if path.exists():
         return path.read_text(encoding="utf-8")
     return ""
+
+st.subheader("📍 Location Verification")
+location = get_geolocation()
+
+if location is None:
+    st.warning("Waiting for location permission... please allow location access in your browser.")
+    st.stop()
+
+lat = location['coords']['latitude']
+lon = location['coords']['longitude']
+
+within_range, distance = is_within_range(lat, lon)
+
+if not within_range:
+    st.error(f"❌ You are {distance:.0f}m away from college. Attendance can only be marked within {ALLOWED_RADIUS_METERS}m.")
+    st.stop()
+else:
+    st.success(f"✅ Location verified ({distance:.0f}m from college)")
 
 css = load_static_file("style.css")
 if css:
@@ -833,7 +861,7 @@ else:
         # Define subjects hierarchy
         subjects_by_year_sem = {
             "1st Year": {
-                "1st Sem": ["C Programing", "DigitalLogics", "C.prog"],
+                "1st Sem": ["C Programing", "DigitalLogics",],
                 "2nd Sem": ["Cpp", "DataStructure"]
             },
             "2nd Year": {
@@ -841,8 +869,8 @@ else:
                 "4th Sem": ["Python", "Operating System", "Computer Graphics"]
             },
             "3rd Year": {
-                "5th Sem": ["R Programing", "MAD"],
-                "6th Sem": ["WCMS"]
+                "5th Sem": ["PHP","DAA","C#",],
+                "6th Sem": [""]
             }
         }
 
