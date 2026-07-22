@@ -1,7 +1,8 @@
+from streamlit.runtime import scriptrunner
+from streamlit.runtime import scriptrunner
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-
 
 import pandas as pd
 import hashlib
@@ -1340,3 +1341,5 @@ else:
                     )
                 else:
                     st.warning("Please enter a roll number to generate a QR code.")
+
+                    
