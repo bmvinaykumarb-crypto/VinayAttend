@@ -4,11 +4,11 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-from streamlit_js_eval import get_geolocation
+from streamlit_js_eval import get_geolocation, streamlit_js_eval
 from geopy.distance import geodesic
 
-COLLEGE_LOCATION = (15.274181832329022, 76.37778413493287)
-ALLOWED_RADIUS_METERS = 3000
+COLLEGE_LOCATION = (15.27380736775977, 76.37746416512822)
+ALLOWED_RADIUS_METERS = 14
 
 def is_within_range(lat, lon):
     distance = geodesic(COLLEGE_LOCATION, (lat, lon)).meters
@@ -43,22 +43,71 @@ def load_static_file(filename: str) -> str:
     return ""
 
 st.subheader("📍 Location Verification")
-location = get_geolocation()
 
-if location is None:
-    st.warning("Waiting for location permission... please allow location access in your browser.")
-    st.stop()
+if 'location_verified' not in st.session_state:
+    st.session_state.location_verified = False
+    st.session_state.location_distance = None
 
-lat = location['coords']['latitude']
-lon = location['coords']['longitude']
+if not st.session_state.location_verified:
+    js_code = """
+    new Promise((resolve, reject) => {
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    resolve({
+                        coords: {
+                            latitude: position.coords.latitude,
+                            longitude: position.coords.longitude,
+                        }
+                    });
+                },
+                (error) => {
+                    resolve({
+                        error: {
+                            code: error.code,
+                            message: error.message,
+                        }
+                    });
+                },
+                {
+                    enableHighAccuracy: true,
+                    timeout: 25000,
+                    maximumAge: 60000
+                }
+            );
+        } else {
+            resolve({ error: { message: 'Browser does not support geolocation!' } });
+        }
+    })
+    """
+    location = streamlit_js_eval(js_expressions=js_code, key='get_loc_fast')
 
-within_range, distance = is_within_range(lat, lon)
+    if location is None:
+        st.warning("⏳ Fetching your location... Please wait. (This can take up to 25 seconds on some computers to get a GPS lock)")
+        st.info("💡 **Not seeing a prompt?**\n1. Click the **lock icon (🔒/tune)** in your browser's address bar (next to localhost:8501).\n2. Ensure **Location** is turned on or set to 'Allow'.\n3. If you are on macOS, ensure Chrome has Location permissions in System Settings -> Privacy & Security.\n4. Refresh the page.")
+        if st.button("🔄 Retry Location Check"):
+            st.rerun()
+        st.stop()
+    elif 'error' in location:
+        st.error(f"❌ Location error: {location['error']['message']}")
+        if st.button("🔄 Retry Location Check"):
+            st.rerun()
+        st.stop()
+    else:
+        lat = location['coords']['latitude']
+        lon = location['coords']['longitude']
 
-if not within_range:
-    st.error(f"❌ You are {distance:.0f}m  u are fare away from VNC BCA(block) college. Attendance can only be marked within this area {ALLOWED_RADIUS_METERS}m.")
-    st.stop()
+        within_range, distance = is_within_range(lat, lon)
+
+        if not within_range:
+            st.error(f"❌ You are {distance:.0f}m  u are fare away from VNC BCA(block) college. Attendance can only be marked within this area {ALLOWED_RADIUS_METERS}m.")
+            st.stop()
+        else:
+            st.session_state.location_verified = True
+            st.session_state.location_distance = distance
+            st.success(f"✅ Location verified ({distance:.0f}m from college)")
 else:
-    st.success(f"✅ Location verified ({distance:.0f}m from college)")
+    st.success(f"✅ Location verified ({st.session_state.location_distance:.0f}m from college)")
 
 css = load_static_file("style.css")
 if css:
