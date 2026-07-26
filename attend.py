@@ -8,7 +8,7 @@ from streamlit_js_eval import get_geolocation, streamlit_js_eval
 from geopy.distance import geodesic
 
 COLLEGE_LOCATION = (15.27380736775977, 76.37746416512822)
-ALLOWED_RADIUS_METERS = 14
+ALLOWED_RADIUS_METERS = 20
 
 def is_within_range(lat, lon):
     distance = geodesic(COLLEGE_LOCATION, (lat, lon)).meters
@@ -128,9 +128,12 @@ if 'auto_scan_active' not in st.session_state:
     st.session_state.auto_scan_active = False
 if 'show_faculty_login' not in st.session_state:
     st.session_state.show_faculty_login = False
+if 'show_admin_login' not in st.session_state:
+    st.session_state.show_admin_login = False
 
 CSV_FILE = "lab_attendance.csv"
 STUDENT_REGISTRY_FILE = "student_registry.csv"
+FACULTIES_REGISTRY_FILE = "faculties_registry.csv"
 REGISTERED_FACES_DIR = "registered_faces"
 
 # Initialize CSV if it doesn't exist
@@ -142,6 +145,10 @@ if not os.path.exists(CSV_FILE):
 if not os.path.exists(STUDENT_REGISTRY_FILE):
     registry_init = pd.DataFrame(columns=["Roll Number", "Registration Date", "Face Encoding", "Face Path"])
     registry_init.to_csv(STUDENT_REGISTRY_FILE, index=False)
+
+if not os.path.exists(FACULTIES_REGISTRY_FILE):
+    fac_init = pd.DataFrame(columns=["Name", "Email", "Department"])
+    fac_init.to_csv(FACULTIES_REGISTRY_FILE, index=False)
 
 def load_data():
     return pd.read_csv(CSV_FILE)
@@ -831,19 +838,27 @@ if st.session_state.redirecting:
 else:
     # Student direct access or faculty wants to login
     # Render Application dashboard (student by default, faculty if logged in)
-    col_logo, col_faculty_btn = st.columns([5, 1])
+    col_logo, col_faculty_btn, col_admin_btn = st.columns([4, 1, 1])
     with col_logo:
         st.markdown("<h1 style='margin:0; font-size: 2.2rem; display: flex; align-items: center;'><span class='text-neon-cyan'>📝 Smart Lab Attendance</span></h1>", unsafe_allow_html=True)
     with col_faculty_btn:
         st.markdown("<div style='padding-top: 8px;'></div>", unsafe_allow_html=True)
         if st.session_state.user_role == "student":
-            if st.button("🔐 Faculty Login", key="faculty_login_nav_btn", use_container_width=True):
+            if st.button("👨‍🏫 Faculty Login", key="faculty_login_nav_btn", use_container_width=True):
                 st.session_state.show_faculty_login = True
+                st.session_state.show_admin_login = False
                 st.rerun()
         else:
             if st.button("Logout", key="logout_btn", use_container_width=True):
                 st.session_state.user_role = "student"
                 st.session_state.username = "Student"
+                st.rerun()
+    with col_admin_btn:
+        st.markdown("<div style='padding-top: 8px;'></div>", unsafe_allow_html=True)
+        if st.session_state.user_role == "student":
+            if st.button("👑 Admin Login", key="admin_login_nav_btn", use_container_width=True):
+                st.session_state.show_admin_login = True
+                st.session_state.show_faculty_login = False
                 st.rerun()
 
     # Faculty login modal if toggled
@@ -872,6 +887,32 @@ else:
         
         st.markdown("---")
             
+    # Admin login modal if toggled
+    if st.session_state.get("show_admin_login", False):
+        st.markdown("---")
+        st.subheader("👑 Admin Sign In")
+        admin_id = st.text_input("Admin ID", placeholder="admin", key="admin_id_input")
+        admin_pw = st.text_input("Password", type="password", placeholder="••••••••", key="admin_pw_input")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Sign In as Admin", use_container_width=True, key="admin_login_btn"):
+                if not admin_id.strip():
+                    st.error("Please enter Admin ID.")
+                elif admin_pw != "admin123":
+                    st.error("Incorrect password. Hint: admin123")
+                else:
+                    st.session_state.user_role = "admin"
+                    st.session_state.username = admin_id.strip()
+                    st.session_state.show_admin_login = False
+                    st.rerun()
+        with col2:
+            if st.button("Cancel", use_container_width=True, key="cancel_admin_login"):
+                st.session_state.show_admin_login = False
+                st.rerun()
+        
+        st.markdown("---")
+            
     st.markdown(
         """
         <div class="hero" style="margin-top: 15px;">
@@ -894,12 +935,225 @@ else:
     col_c.metric("Unique Students", f"{unique_students}")
     
     st.divider()    # Configure tabs based on user role
-    if st.session_state.user_role == "student":
+    if st.session_state.user_role == "admin":
+        tab_list = ["👨‍🏫 Manage Faculty", "📥 Download Attendance", "📊 Attendance Analytics"]
+    elif st.session_state.user_role == "student":
         tab_list = ["👤 Face & QR Attendance", "👤 Register My Face", "📇 My QR Code"]
     else:
         tab_list = ["👤 Face & QR Attendance", "📊 View Records", "🧑‍🎓 Manage Students & Faces"]
         
     tabs = st.tabs(tab_list)
+    
+    if st.session_state.user_role == "admin":
+        with tabs[0]:
+            st.header("👨‍🏫 Manage Faculty")
+            st.markdown("<div class='section-note'>Add new faculty members and view the current registry.</div>", unsafe_allow_html=True)
+            fac_df = pd.read_csv(FACULTIES_REGISTRY_FILE)
+            
+            with st.form("add_faculty_form"):
+                f_name = st.text_input("Faculty Name", placeholder="e.g. Dr. John Doe")
+                f_email = st.text_input("Faculty Email", placeholder="e.g. john@college.edu")
+                f_dept = st.text_input("Department / Subject", placeholder="e.g. Python, DBMS, JAVA")
+                submitted = st.form_submit_button("Add Faculty", type="primary")
+                if submitted:
+                    if f_name and f_email and f_dept:
+                        new_fac = pd.DataFrame([{"Name": f_name.strip(), "Email": f_email.strip(), "Department": f_dept.strip()}])
+                        fac_df = pd.concat([fac_df, new_fac], ignore_index=True)
+                        fac_df.to_csv(FACULTIES_REGISTRY_FILE, index=False)
+                        st.success(f"Successfully added {f_name}!")
+                        st.rerun()
+                    else:
+                        st.error("Please fill in all fields.")
+            
+            st.subheader("Registered Faculties")
+            if fac_df.empty:
+                st.info("No faculties registered yet.")
+            else:
+                st.dataframe(fac_df, use_container_width=True, hide_index=True)
+
+        # ---- NEW TAB: Download Attendance per Faculty Subject ----
+        with tabs[1]:
+            st.header("📥 Download Faculty Subject Attendance")
+            st.markdown("<div class='section-note'>Download attendance data separately for each registered faculty's subject. Filter by date range and download individual CSV files per faculty.</div>", unsafe_allow_html=True)
+
+            fac_df = pd.read_csv(FACULTIES_REGISTRY_FILE)
+            att_df = pd.read_csv(CSV_FILE)
+
+            if fac_df.empty:
+                st.warning("⚠️ No faculties registered yet. Go to **Manage Faculty** tab to add faculties first.")
+            elif att_df.empty:
+                st.warning("⚠️ No attendance records found yet.")
+            else:
+                # Date range filter
+                st.subheader("📅 Filter by Date Range")
+                col_start, col_end = st.columns(2)
+                with col_start:
+                    start_date = st.date_input(
+                        "Start Date",
+                        value=pd.to_datetime(att_df["Date"].min()).date() if not att_df.empty else datetime.now().date(),
+                        key="admin_dl_start_date"
+                    )
+                with col_end:
+                    end_date = st.date_input(
+                        "End Date",
+                        value=datetime.now().date(),
+                        key="admin_dl_end_date"
+                    )
+
+                start_str = start_date.strftime("%Y-%m-%d")
+                end_str = end_date.strftime("%Y-%m-%d")
+
+                # Filter attendance by date range
+                date_filtered_att = att_df[(att_df["Date"] >= start_str) & (att_df["Date"] <= end_str)]
+
+                if date_filtered_att.empty:
+                    st.info(f"No attendance records found between {start_date.strftime('%b %d, %Y')} and {end_date.strftime('%b %d, %Y')}.")
+                else:
+                    st.success(f"📋 Found **{len(date_filtered_att)}** records between **{start_date.strftime('%b %d, %Y')}** and **{end_date.strftime('%b %d, %Y')}**")
+
+                    st.divider()
+
+                    # --- Download All Faculty Data at Once ---
+                    st.subheader("📦 Bulk Download All Faculty Data")
+                    st.markdown("Download all registered faculty subjects' attendance in one click.")
+
+                    import zipfile
+                    zip_buffer = BytesIO()
+                    has_data = False
+                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for _, fac_row in fac_df.iterrows():
+                            fac_subject = str(fac_row.get("Department", "")).strip()
+                            fac_name = str(fac_row.get("Name", "")).strip()
+                            if not fac_subject:
+                                continue
+                            subject_data = date_filtered_att[date_filtered_att["Lab"].str.strip().str.lower() == fac_subject.lower()]
+                            if not subject_data.empty:
+                                has_data = True
+                                csv_content = subject_data[["Roll Number", "Date", "Time", "Lab"]].to_csv(index=False)
+                                safe_name = fac_name.replace(" ", "_") if fac_name else fac_subject.replace(" ", "_")
+                                zf.writestr(f"{safe_name}_{fac_subject}_attendance.csv", csv_content)
+
+                    if has_data:
+                        st.download_button(
+                            label="⬇️ Download All Faculty Attendance (ZIP)",
+                            data=zip_buffer.getvalue(),
+                            file_name=f"all_faculty_attendance_{start_str}_to_{end_str}.zip",
+                            mime="application/zip",
+                            key="admin_dl_all_zip",
+                            use_container_width=True,
+                        )
+                    else:
+                        st.info("No matching attendance data found for any registered faculty subjects.")
+
+                    st.divider()
+
+                    # --- Per-Faculty Download Cards ---
+                    st.subheader("👨‍🏫 Download Per Faculty")
+
+                    for fac_idx, fac_row in fac_df.iterrows():
+                        fac_name = str(fac_row.get("Name", "Unknown")).strip()
+                        fac_email = str(fac_row.get("Email", "")).strip()
+                        fac_subject = str(fac_row.get("Department", "")).strip()
+
+                        if not fac_subject:
+                            continue
+
+                        # Filter attendance for this faculty's subject (case-insensitive match)
+                        subject_att = date_filtered_att[date_filtered_att["Lab"].str.strip().str.lower() == fac_subject.lower()]
+
+                        with st.expander(f"👤 {fac_name} — 📚 {fac_subject} ({len(subject_att)} records)", expanded=False):
+                            st.markdown(f"""
+                            | Field | Value |
+                            |-------|-------|
+                            | **Faculty Name** | {fac_name} |
+                            | **Email** | {fac_email} |
+                            | **Subject** | {fac_subject} |
+                            | **Total Records** | {len(subject_att)} |
+                            | **Unique Students** | {subject_att['Roll Number'].nunique() if not subject_att.empty else 0} |
+                            | **Date Range** | {start_date.strftime('%b %d, %Y')} → {end_date.strftime('%b %d, %Y')} |
+                            """)
+
+                            if subject_att.empty:
+                                st.info(f"No attendance records found for **{fac_subject}** in the selected date range.")
+                            else:
+                                # Show data preview
+                                st.dataframe(
+                                    subject_att[["Roll Number", "Date", "Time", "Lab"]].sort_values(["Date", "Time"], ascending=[False, False]),
+                                    use_container_width=True,
+                                    hide_index=True,
+                                    column_config={
+                                        "Roll Number": st.column_config.TextColumn("Student Roll Number", width="medium"),
+                                        "Date": st.column_config.TextColumn("Date", width="small"),
+                                        "Time": st.column_config.TextColumn("Time", width="small"),
+                                        "Lab": st.column_config.TextColumn("Subject", width="medium"),
+                                    }
+                                )
+
+                                # Summary metrics row
+                                m1, m2, m3 = st.columns(3)
+                                with m1:
+                                    st.metric("Total Records", len(subject_att))
+                                with m2:
+                                    st.metric("Unique Students", subject_att["Roll Number"].nunique())
+                                with m3:
+                                    unique_dates = subject_att["Date"].nunique()
+                                    st.metric("Active Days", unique_dates)
+
+                                # Download button for this faculty
+                                csv_data = subject_att[["Roll Number", "Date", "Time", "Lab"]].to_csv(index=False).encode("utf-8")
+                                safe_fname = fac_name.replace(" ", "_")
+                                st.download_button(
+                                    label=f"⬇️ Download {fac_subject} Attendance CSV",
+                                    data=csv_data,
+                                    file_name=f"{safe_fname}_{fac_subject}_attendance_{start_str}_to_{end_str}.csv",
+                                    mime="text/csv",
+                                    key=f"admin_dl_fac_{fac_idx}_{fac_subject}",
+                                    use_container_width=True,
+                                )
+
+                    st.divider()
+
+                    # --- Summary Table ---
+                    st.subheader("📊 Faculty Subject Summary")
+                    summary_rows = []
+                    for _, fac_row in fac_df.iterrows():
+                        fac_name = str(fac_row.get("Name", "Unknown")).strip()
+                        fac_subject = str(fac_row.get("Department", "")).strip()
+                        if not fac_subject:
+                            continue
+                        subject_att = date_filtered_att[date_filtered_att["Lab"].str.strip().str.lower() == fac_subject.lower()]
+                        summary_rows.append({
+                            "Faculty": fac_name,
+                            "Subject": fac_subject,
+                            "Total Records": len(subject_att),
+                            "Unique Students": subject_att["Roll Number"].nunique() if not subject_att.empty else 0,
+                            "Active Days": subject_att["Date"].nunique() if not subject_att.empty else 0,
+                        })
+
+                    if summary_rows:
+                        summary_table = pd.DataFrame(summary_rows)
+                        st.dataframe(summary_table, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("No faculty subjects to summarize.")
+
+        with tabs[2]:
+            st.header("📊 Attendance Analytics")
+            st.markdown("<div class='section-note'>Overview of student attendance trends.</div>", unsafe_allow_html=True)
+            att_df = pd.read_csv(CSV_FILE)
+            if not att_df.empty:
+                st.subheader("📈 Attendance Over Time")
+                date_counts = att_df.groupby("Date").size().reset_index(name="Total Attendance")
+                st.line_chart(date_counts.set_index("Date"), use_container_width=True)
+                
+                st.divider()
+                
+                st.subheader("📚 Attendance by Lab Subject")
+                lab_counts = att_df.groupby("Lab").size().reset_index(name="Total Attendance")
+                st.bar_chart(lab_counts.set_index("Lab"), use_container_width=True)
+            else:
+                st.info("No attendance records found yet.")
+                
+        st.stop()
     
     with tabs[0]:
         st.header("👤 Face & QR Scanner Attendance")
