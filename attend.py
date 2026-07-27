@@ -8,7 +8,7 @@ from streamlit_js_eval import get_geolocation, streamlit_js_eval
 from geopy.distance import geodesic
 
 COLLEGE_LOCATION = (15.27380736775977, 76.37746416512822)
-ALLOWED_RADIUS_METERS = 40
+ALLOWED_RADIUS_METERS = 30
 
 def is_within_range(lat, lon):
     distance = geodesic(COLLEGE_LOCATION, (lat, lon)).meters
@@ -941,14 +941,13 @@ if st.session_state.redirecting:
 
 else:
     # Student direct access or faculty wants to login
-    # Render Application dashboard (student by default, faculty if logged in)
     col_logo, col_faculty_btn, col_admin_btn = st.columns([4, 1, 1])
     with col_logo:
-        st.markdown("<h1 style='margin:0; font-size: 2.2rem; display: flex; align-items: center;'><span class='text-neon-cyan'>📝 Smart Lab Attendance</span></h1>", unsafe_allow_html=True)
+        st.markdown("<h1 style='margin:0; font-size: 1.6rem; font-weight: 600; color: #f4f4f5;'>Smart Lab Attendance</h1>", unsafe_allow_html=True)
     with col_faculty_btn:
-        st.markdown("<div style='padding-top: 8px;'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='padding-top: 4px;'></div>", unsafe_allow_html=True)
         if st.session_state.user_role == "student":
-            if st.button("👨‍🏫 Faculty Login", key="faculty_login_nav_btn", use_container_width=True):
+            if st.button("Faculty Login", key="faculty_login_nav_btn", use_container_width=True):
                 st.session_state.show_faculty_login = True
                 st.session_state.show_admin_login = False
                 st.rerun()
@@ -958,9 +957,9 @@ else:
                 st.session_state.username = "Student"
                 st.rerun()
     with col_admin_btn:
-        st.markdown("<div style='padding-top: 8px;'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='padding-top: 4px;'></div>", unsafe_allow_html=True)
         if st.session_state.user_role == "student":
-            if st.button("👑 Admin Login", key="admin_login_nav_btn", use_container_width=True):
+            if st.button("Admin Login", key="admin_login_nav_btn", use_container_width=True):
                 st.session_state.show_admin_login = True
                 st.session_state.show_faculty_login = False
                 st.rerun()
@@ -1467,12 +1466,14 @@ else:
 
         for idx, yr in enumerate(years):
             with cols[idx]:
-                st.markdown(f"<div style='text-align: center; font-weight: bold; font-size: 1.1em; color: var(--text-primary); margin-bottom: 8px;'>📅 {yr}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='font-weight: 600; font-size: 0.95rem; color: var(--text-primary); margin-bottom: 8px;'>{yr}</div>", unsafe_allow_html=True)
                 for sem, subs in subjects_by_year_sem[yr].items():
-                    st.markdown(f"<div style='font-size: 0.9em; color: var(--text-secondary); margin-top: 5px; margin-bottom: 2px; font-weight: 600;'>{sem}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='font-size: 0.8rem; color: var(--text-muted); margin-top: 8px; margin-bottom: 4px; font-weight: 500;'>{sem}</div>", unsafe_allow_html=True)
                     for sub in subs:
+                        if not sub:
+                            continue
                         is_selected = (st.session_state.selected_subject == sub)
-                        btn_label = f"✅ {sub}" if is_selected else f"📄 {sub}"
+                        btn_label = f"✓  {sub}" if is_selected else sub
                         if st.button(
                             btn_label, 
                             key=f"btn_sel_{yr}_{sem}_{sub}", 
