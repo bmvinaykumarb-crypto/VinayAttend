@@ -8,7 +8,7 @@ from streamlit_js_eval import get_geolocation, streamlit_js_eval
 from geopy.distance import geodesic
 
 COLLEGE_LOCATION = (15.27380736775977, 76.37746416512822)
-ALLOWED_RADIUS_METERS = 20
+ALLOWED_RADIUS_METERS = 40
 
 def is_within_range(lat, lon):
     distance = geodesic(COLLEGE_LOCATION, (lat, lon)).meters
