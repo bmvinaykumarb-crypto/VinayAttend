@@ -8,7 +8,7 @@ from streamlit_js_eval import get_geolocation, streamlit_js_eval
 from geopy.distance import geodesic
 
 COLLEGE_LOCATION = (15.273742050438997, 76.37744374430432)
-ALLOWED_RADIUS_METERS = 20
+ALLOWED_RADIUS_METERS = 14
 
 def is_within_range(lat, lon):
     distance = geodesic(COLLEGE_LOCATION, (lat, lon)).meters
@@ -71,8 +71,8 @@ if not st.session_state.location_verified:
                 },
                 {
                     enableHighAccuracy: true,
-                    timeout: 25000,
-                    maximumAge: 60000
+                    timeout: 28000,
+                    maximumAge: 70000
                 }
             );
         } else {
@@ -1043,7 +1043,7 @@ else:
     elif st.session_state.user_role == "student":
         tab_list = ["👤 Face & QR Attendance", "👤 Register My Face", "📇 My QR Code"]
     else:
-        tab_list = ["👤 Face & QR Attendance", "📊 View Records", "🧑‍🎓 Manage Students & Faces"]
+        tab_list = ["👤 Face & QR Attendance", "📊 View Records", "🧑‍🎓 Manage Students & Faces", "📥 Download Student Record"]
         
     tabs = st.tabs(tab_list)
     
@@ -1059,7 +1059,7 @@ else:
         },
         "3rd Year": {
             "5th Sem": ["PHP", "DAA", "C#"],
-            "6th Sem": []
+            "6th Sem": ["AIML"]
         }
     }
 
@@ -1456,32 +1456,42 @@ else:
             },
             "3rd Year": {
                 "5th Sem": ["PHP","DAA","C#",],
-                "6th Sem": [""]
+                "6th Sem": ["AIML"]
             }
         }
 
-        # 3 columns for 1st Year, 2nd Year, 3rd Year
-        cols = st.columns(3)
-        years = ["1st Year", "2nd Year", "3rd Year"]
+        st.markdown('<div class="subject-selection-marker"></div>', unsafe_allow_html=True)
 
-        for idx, yr in enumerate(years):
-            with cols[idx]:
-                st.markdown(f"<div style='font-weight: 600; font-size: 0.95rem; color: var(--text-primary); margin-bottom: 8px;'>{yr}</div>", unsafe_allow_html=True)
-                for sem, subs in subjects_by_year_sem[yr].items():
-                    st.markdown(f"<div style='font-size: 0.8rem; color: var(--text-muted); margin-top: 8px; margin-bottom: 4px; font-weight: 500;'>{sem}</div>", unsafe_allow_html=True)
-                    for sub in subs:
-                        if not sub:
-                            continue
-                        is_selected = (st.session_state.selected_subject == sub)
-                        btn_label = f"✓  {sub}" if is_selected else sub
-                        if st.button(
-                            btn_label, 
-                            key=f"btn_sel_{yr}_{sem}_{sub}", 
-                            use_container_width=True, 
-                            type="primary" if is_selected else "secondary"
-                        ):
-                            st.session_state.selected_subject = sub
-                            st.rerun()
+        # Dynamic accordion: expand only the year that contains the selected subject
+        active_year = "1st Year"
+        for yr, sems in subjects_by_year_sem.items():
+            for sem, subs in sems.items():
+                if st.session_state.selected_subject in subs:
+                    active_year = yr
+
+        for yr in ["1st Year", "2nd Year", "3rd Year"]:
+            is_expanded = (yr == active_year)
+            with st.expander(f"📅 {yr}", expanded=is_expanded):
+                sems = list(subjects_by_year_sem[yr].keys())
+                sem_cols = st.columns(len(sems))
+                for s_idx, sem in enumerate(sems):
+                    with sem_cols[s_idx]:
+                        st.markdown(f"<div style='font-size: 0.95rem; color: #222222; margin-top: 4px; margin-bottom: 8px; font-weight: 600;'>{sem}</div>", unsafe_allow_html=True)
+                        subs = subjects_by_year_sem[yr][sem]
+                        for sub in subs:
+                            if not sub:
+                                st.markdown("<p style='color:#888;margin:0;font-size:0.875rem;'>No subjects added yet</p>", unsafe_allow_html=True)
+                                continue
+                            is_selected = (st.session_state.selected_subject == sub)
+                            btn_label = f"✅  {sub}" if is_selected else f"📄  {sub}"
+                            if st.button(
+                                btn_label, 
+                                key=f"btn_sel_{yr}_{sem}_{sub}", 
+                                use_container_width=True, 
+                                type="primary" if is_selected else "secondary"
+                            ):
+                                st.session_state.selected_subject = sub
+                                st.rerun()
 
         lab_choice = st.session_state.selected_subject
         st.markdown("<div class='section-note'>Select the correct lab subject first, then use your face or QR Code to verify and mark attendance.</div>", unsafe_allow_html=True)
@@ -1965,4 +1975,80 @@ else:
                 else:
                     st.warning("Please enter a roll number to generate a QR code.")
 
-                    
+        with tabs[3]:
+            st.header("📥 Download Student Attendance Record")
+            st.markdown("<div class='section-note'>Enter a student's <strong>Roll Number</strong> to view and download their complete attendance history across <strong>all subjects</strong>.</div>", unsafe_allow_html=True)
+
+            search_roll = st.text_input(
+                "🔍 Enter Student Roll Number",
+                placeholder="e.g. U16VH24S0208",
+                key="faculty_search_student_roll"
+            ).strip()
+
+            if search_roll:
+                all_data = load_data()
+                student_data = all_data[all_data["Roll Number"].astype(str) == search_roll]
+
+                if student_data.empty:
+                    st.warning(f"⚠️ No attendance records found for Roll Number **{search_roll}**.")
+                else:
+                    # Summary metrics
+                    total_records = len(student_data)
+                    unique_subjects = student_data["Lab"].nunique()
+                    unique_dates = student_data["Date"].nunique()
+
+                    st.success(f"✅ Found **{total_records}** attendance records for **{search_roll}** across **{unique_subjects}** subjects over **{unique_dates}** days.")
+
+                    col_m1, col_m2, col_m3 = st.columns(3)
+                    with col_m1:
+                        st.metric("Total Records", total_records)
+                    with col_m2:
+                        st.metric("Subjects", unique_subjects)
+                    with col_m3:
+                        st.metric("Days Attended", unique_dates)
+
+                    st.divider()
+
+                    # Download all records as CSV
+                    csv_student = student_data.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label=f"📥 Download All Records for {search_roll} as CSV",
+                        data=csv_student,
+                        file_name=f"{search_roll}_attendance_all_subjects.csv",
+                        mime="text/csv",
+                        key=f"dl_student_all_{search_roll}",
+                        type="primary",
+                        use_container_width=True
+                    )
+
+                    st.divider()
+
+                    # Show records grouped by subject
+                    st.subheader("📚 Subject-wise Attendance Breakdown")
+                    subjects = sorted(student_data["Lab"].unique())
+
+                    for subject in subjects:
+                        subject_records = student_data[student_data["Lab"] == subject].sort_values("Date", ascending=False)
+                        with st.expander(f"📘 {subject} — {len(subject_records)} record(s)", expanded=True):
+                            st.dataframe(
+                                subject_records[["Date", "Time", "Lab"]],
+                                width='stretch',
+                                hide_index=True,
+                                column_config={
+                                    "Date": st.column_config.TextColumn("Date", width="medium"),
+                                    "Time": st.column_config.TextColumn("Time", width="medium"),
+                                    "Lab": st.column_config.TextColumn("Subject", width="medium")
+                                }
+                            )
+
+                            # Per-subject CSV download
+                            csv_subject = subject_records.to_csv(index=False).encode('utf-8')
+                            st.download_button(
+                                label=f"📥 Download {subject} records",
+                                data=csv_subject,
+                                file_name=f"{search_roll}_{subject.replace(' ', '_')}_attendance.csv",
+                                mime="text/csv",
+                                key=f"dl_student_{search_roll}_{subject}"
+                            )
+            else:
+                st.info("👆 Type a student Roll Number above to search their attendance records.")
