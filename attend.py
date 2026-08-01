@@ -7,8 +7,8 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 from streamlit_js_eval import get_geolocation, streamlit_js_eval
 from geopy.distance import geodesic
 
-COLLEGE_LOCATION = (15.273742050438997, 76.37744374430432)
-ALLOWED_RADIUS_METERS = 14
+COLLEGE_LOCATION = (15.273742673769599, 76.37739703526368)
+ALLOWED_RADIUS_METERS = 30
 
 def is_within_range(lat, lon):
     distance = geodesic(COLLEGE_LOCATION, (lat, lon)).meters
@@ -71,7 +71,7 @@ if not st.session_state.location_verified:
                 },
                 {
                     enableHighAccuracy: true,
-                    timeout: 28000,
+                    timeout: 20000,
                     maximumAge: 70000
                 }
             );
@@ -1697,7 +1697,7 @@ else:
             )
         
         with col_filter:
-            filter_lab = st.selectbox("Filter by Subject", ["All", "Python", "Operating System", "Computer Graphics", "DataStructure", "Cpp", "DBMS", "DigitalLogics", "JAVA", "WebDesigen", "C Programing", "R Programing", "C.prog", "MAD", "WCMS"])
+            filter_lab = st.selectbox("Filter by Subject", ["All", "Python", "Operating System", "Computer Graphics", "DataStructure", "Cpp", "DBMS", "DigitalLogics", "JAVA", "WebDesigen", "C Programing", "DAA", "C#", "PHP", "AIML"])
         
         # Convert selected_date to string format for comparison
         selected_date_str = selected_date.strftime("%Y-%m-%d")
