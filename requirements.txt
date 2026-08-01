@@ -3,6 +3,6 @@ pandas
 numpy
 opencv-python
 Pillow
-face-recognition
 qrcode
-dlib
+streamlit-js-eval
+geopy
