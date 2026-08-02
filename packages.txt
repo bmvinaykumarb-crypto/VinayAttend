@@ -8,3 +8,4 @@ libgl1
 libsm6
 libxext6
 libxrender1
+libgtk2.0-0
