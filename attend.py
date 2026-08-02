@@ -27,31 +27,62 @@ from PIL import Image
 import json
 import streamlit as st
 import urllib.request
+import urllib.error
 
 # --- MediaPipe for face detection, landmarks (liveness) ---
 try:
     import mediapipe as mp
-    mp_face_mesh = mp.solutions.face_mesh
-    mp_face_detection = mp.solutions.face_detection
     FACE_RECOGNITION_AVAILABLE = True
-except ImportError:
+except (ImportError, AttributeError):
     FACE_RECOGNITION_AVAILABLE = False
 
 # --- OpenCV SFace for face recognition/embedding ---
 SFACE_MODEL_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
 YUNET_MODEL_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+FACE_LANDMARKER_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
 MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 SFACE_MODEL_PATH = os.path.join(MODEL_DIR, "face_recognition_sface_2021dec.onnx")
 YUNET_MODEL_PATH = os.path.join(MODEL_DIR, "face_detection_yunet_2023mar.onnx")
+FACE_LANDMARKER_PATH = os.path.join(MODEL_DIR, "face_landmarker.task")
 
 
 def ensure_models_downloaded():
-    """Download SFace and YuNet ONNX models if not already cached."""
+    """Download SFace, YuNet, and MediaPipe FaceLandmarker models if not already cached."""
+    import ssl
     os.makedirs(MODEL_DIR, exist_ok=True)
-    for url, path in [(SFACE_MODEL_URL, SFACE_MODEL_PATH), (YUNET_MODEL_URL, YUNET_MODEL_PATH)]:
+    models = [
+        (SFACE_MODEL_URL, SFACE_MODEL_PATH),
+        (YUNET_MODEL_URL, YUNET_MODEL_PATH),
+        (FACE_LANDMARKER_URL, FACE_LANDMARKER_PATH),
+    ]
+    for url, path in models:
         if not os.path.exists(path):
             try:
                 urllib.request.urlretrieve(url, path)
+            except ssl.SSLError:
+                # Fallback: bypass SSL verification (safe for known model URLs)
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                try:
+                    with urllib.request.urlopen(url, context=ctx) as response:
+                        with open(path, 'wb') as f:
+                            f.write(response.read())
+                except Exception as e2:
+                    st.warning(f"Failed to download model from {url}: {e2}")
+                    return False
+            except urllib.error.URLError:
+                # Also handle URLError wrapping SSL errors
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                try:
+                    with urllib.request.urlopen(url, context=ctx) as response:
+                        with open(path, 'wb') as f:
+                            f.write(response.read())
+                except Exception as e2:
+                    st.warning(f"Failed to download model from {url}: {e2}")
+                    return False
             except Exception as e:
                 st.warning(f"Failed to download model from {url}: {e}")
                 return False
@@ -477,7 +508,7 @@ def get_landmarks_from_mediapipe(face_landmarks, w, h):
     """Extract landmark point lists from MediaPipe face mesh results.
     Returns dict with keys: left_eye, right_eye, top_lip, bottom_lip, chin, nose_tip."""
     def lm_to_px(idx):
-        lm = face_landmarks.landmark[idx]
+        lm = face_landmarks[idx]
         return (int(lm.x * w), int(lm.y * h))
 
     return {
@@ -751,14 +782,21 @@ def auto_scan_face_from_camera(timeout=25, threshold=0.363):
     open_thresh = 0.25
     closed_thresh = 0.20
     
-    # Initialize MediaPipe FaceMesh and SFace recognizer
-    face_mesh = mp_face_mesh.FaceMesh(
-        static_image_mode=False,
-        max_num_faces=1,
-        refine_landmarks=True,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
+    # Initialize MediaPipe FaceLandmarker (new 1.0 task-based API)
+    BaseOptions = mp.tasks.BaseOptions
+    FaceLandmarker = mp.tasks.vision.FaceLandmarker
+    FaceLandmarkerOptions = mp.tasks.vision.FaceLandmarkerOptions
+    VisionRunningMode = mp.tasks.vision.RunningMode
+
+    landmarker_options = FaceLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=FACE_LANDMARKER_PATH),
+        running_mode=VisionRunningMode.VIDEO,
+        num_faces=1,
+        min_face_detection_confidence=0.5,
+        min_face_presence_confidence=0.5,
+        min_tracking_confidence=0.5,
     )
+    face_landmarker = FaceLandmarker.create_from_options(landmarker_options)
     recognizer = get_face_recognizer()
     
     # Recognition throttle — only run SFace every N frames
@@ -779,10 +817,12 @@ def auto_scan_face_from_camera(timeout=25, threshold=0.363):
         # Convert BGR to RGB for MediaPipe
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
-        # Run MediaPipe FaceMesh
-        results = face_mesh.process(rgb_frame)
+        # Run MediaPipe FaceLandmarker (task-based API)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+        timestamp_ms = int((time.time() - start_ts) * 1000)
+        results = face_landmarker.detect_for_video(mp_image, timestamp_ms)
         
-        if results.multi_face_landmarks is None or len(results.multi_face_landmarks) == 0:
+        if not results.face_landmarks:
             # Face lost tracking
             if face_lost_timestamp is None:
                 face_lost_timestamp = time.time()
@@ -797,7 +837,7 @@ def auto_scan_face_from_camera(timeout=25, threshold=0.363):
             # Face found, reset face lost timestamp
             face_lost_timestamp = None
             
-            face_lm = results.multi_face_landmarks[0]
+            face_lm = results.face_landmarks[0]
             
             # Extract landmarks for EAR/MAR/yaw
             landmarks = get_landmarks_from_mediapipe(face_lm, w, h)
@@ -809,8 +849,8 @@ def auto_scan_face_from_camera(timeout=25, threshold=0.363):
             nose_tip = landmarks["nose_tip"]
             
             # Calculate bounding box from all landmarks
-            all_x = [int(lm.x * w) for lm in face_lm.landmark]
-            all_y = [int(lm.y * h) for lm in face_lm.landmark]
+            all_x = [int(lm.x * w) for lm in face_lm]
+            all_y = [int(lm.y * h) for lm in face_lm]
             left = max(0, min(all_x) - 10)
             top = max(0, min(all_y) - 10)
             right = min(w, max(all_x) + 10)
@@ -967,7 +1007,7 @@ def auto_scan_face_from_camera(timeout=25, threshold=0.363):
             
         time.sleep(0.01)
         
-    face_mesh.close()
+    face_landmarker.close()
     cap.release()
     stframe.empty()
     status_text.empty()
