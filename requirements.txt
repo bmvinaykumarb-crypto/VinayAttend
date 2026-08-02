@@ -1,10 +1,11 @@
 streamlit
 pandas
 numpy
-opencv-python
+opencv-python-headless
 Pillow
 qrcode
 streamlit-js-eval
 geopy
+cmake
+dlib==19.24.2
 face_recognition
-dlib
