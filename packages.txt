@@ -1,6 +1,6 @@
-build-essential
 cmake
-libsm6
-libxext6
-libxrender-dev
-libglib2.0-0
+build-essential
+libboost-all-dev
+libopenblas-dev
+liblapack-dev
+libx11-dev
