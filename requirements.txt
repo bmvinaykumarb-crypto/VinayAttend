@@ -6,5 +6,4 @@ Pillow
 qrcode
 streamlit-js-eval
 geopy
-dlib-bin
-face_recognition
+mediapipe

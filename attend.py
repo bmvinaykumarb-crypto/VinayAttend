@@ -26,12 +26,97 @@ from io import BytesIO
 from PIL import Image
 import json
 import streamlit as st
+import urllib.request
 
+# --- MediaPipe for face detection, landmarks (liveness) ---
 try:
-    import face_recognition
+    import mediapipe as mp
+    mp_face_mesh = mp.solutions.face_mesh
+    mp_face_detection = mp.solutions.face_detection
     FACE_RECOGNITION_AVAILABLE = True
 except ImportError:
     FACE_RECOGNITION_AVAILABLE = False
+
+# --- OpenCV SFace for face recognition/embedding ---
+SFACE_MODEL_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
+YUNET_MODEL_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+SFACE_MODEL_PATH = os.path.join(MODEL_DIR, "face_recognition_sface_2021dec.onnx")
+YUNET_MODEL_PATH = os.path.join(MODEL_DIR, "face_detection_yunet_2023mar.onnx")
+
+
+def ensure_models_downloaded():
+    """Download SFace and YuNet ONNX models if not already cached."""
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    for url, path in [(SFACE_MODEL_URL, SFACE_MODEL_PATH), (YUNET_MODEL_URL, YUNET_MODEL_PATH)]:
+        if not os.path.exists(path):
+            try:
+                urllib.request.urlretrieve(url, path)
+            except Exception as e:
+                st.warning(f"Failed to download model from {url}: {e}")
+                return False
+    return True
+
+
+def get_face_detector(image_width, image_height):
+    """Get OpenCV YuNet face detector."""
+    detector = cv2.FaceDetectorYN.create(
+        YUNET_MODEL_PATH, "", (image_width, image_height),
+        score_threshold=0.6, nms_threshold=0.3, top_k=5000
+    )
+    return detector
+
+
+def get_face_recognizer():
+    """Get OpenCV SFace face recognizer."""
+    return cv2.FaceRecognizerSF.create(SFACE_MODEL_PATH, "")
+
+
+def extract_face_embedding(image_np):
+    """Extract 128-d face embedding from an image using YuNet + SFace.
+    Returns (embedding_array, error_string). On success error_string is None."""
+    if not ensure_models_downloaded():
+        return None, "Face recognition models are not available."
+
+    h, w = image_np.shape[:2]
+    detector = get_face_detector(w, h)
+    recognizer = get_face_recognizer()
+
+    _, faces = detector.detect(image_np)
+    if faces is None or len(faces) == 0:
+        return None, "No face detected in the image. Please make sure your face is clearly visible."
+    if len(faces) > 1:
+        return None, "Multiple faces detected. Please make sure only one person is in the frame."
+
+    aligned_face = recognizer.alignCrop(image_np, faces[0])
+    embedding = recognizer.feature(aligned_face)
+    return embedding.flatten(), None
+
+
+def compare_face_embeddings(emb1, emb2, threshold=0.363):
+    """Compare two face embeddings using cosine similarity.
+    Returns (is_match, similarity_score)."""
+    recognizer = get_face_recognizer()
+    score = recognizer.match(
+        emb1.reshape(1, -1).astype(np.float32),
+        emb2.reshape(1, -1).astype(np.float32),
+        cv2.FaceRecognizerSF_FR_COSINE
+    )
+    return score >= threshold, score
+
+
+# --- MediaPipe landmark indices for EAR (Eye Aspect Ratio) blink detection ---
+# Right eye landmarks (6 points matching the standard EAR formula)
+MP_RIGHT_EYE = [33, 160, 158, 133, 153, 144]
+# Left eye landmarks
+MP_LEFT_EYE = [362, 385, 387, 263, 373, 380]
+# Lip landmarks for MAR (Mouth Aspect Ratio)
+MP_TOP_LIP = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 308, 415, 310, 311, 312, 13, 82, 81, 80, 191]
+MP_BOTTOM_LIP = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95]
+# Chin/jaw outline for yaw estimation
+MP_CHIN = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109]
+# Nose tip for yaw
+MP_NOSE_TIP = [1, 2, 98, 327, 4]
 
 
 st.set_page_config(page_title="Smart Lab Attendance", layout="wide", page_icon="📝")
@@ -332,17 +417,18 @@ def deserialize_face_encoding(encoding_str):
 
 
 def calculate_ear(eye_points):
-    """Calculate Eye Aspect Ratio (EAR) for blink detection."""
+    """Calculate Eye Aspect Ratio (EAR) for blink detection.
+    Works with both dlib-style tuples and MediaPipe-style numpy arrays."""
     if len(eye_points) < 6:
         return 0.0
-    p0, p1, p2, p3, p4, p5 = eye_points
+    p0, p1, p2, p3, p4, p5 = [np.array(p) for p in eye_points[:6]]
     
     # Distance between vertical eye landmarks
-    a = np.linalg.norm(np.array(p1) - np.array(p5))
-    b = np.linalg.norm(np.array(p2) - np.array(p4))
+    a = np.linalg.norm(p1 - p5)
+    b = np.linalg.norm(p2 - p4)
     
     # Distance between horizontal eye landmarks
-    c = np.linalg.norm(np.array(p0) - np.array(p3))
+    c = np.linalg.norm(p0 - p3)
     
     if c == 0:
         return 0.0
@@ -387,28 +473,43 @@ def calculate_yaw_ratio(chin, nose_tip):
     return d_left / d_right
 
 
-def match_face(face_image_file, tolerance=0.55):
+def get_landmarks_from_mediapipe(face_landmarks, w, h):
+    """Extract landmark point lists from MediaPipe face mesh results.
+    Returns dict with keys: left_eye, right_eye, top_lip, bottom_lip, chin, nose_tip."""
+    def lm_to_px(idx):
+        lm = face_landmarks.landmark[idx]
+        return (int(lm.x * w), int(lm.y * h))
+
+    return {
+        "left_eye": [lm_to_px(i) for i in MP_LEFT_EYE],
+        "right_eye": [lm_to_px(i) for i in MP_RIGHT_EYE],
+        "top_lip": [lm_to_px(i) for i in MP_TOP_LIP],
+        "bottom_lip": [lm_to_px(i) for i in MP_BOTTOM_LIP],
+        "chin": [lm_to_px(i) for i in MP_CHIN],
+        "nose_tip": [lm_to_px(i) for i in MP_NOSE_TIP],
+    }
+
+
+def match_face(face_image_file, threshold=0.363):
     """
     Given an uploaded or captured image file, detect the face,
     compare it against the registered face encodings in the database,
     and return the matched roll number, or None if no match.
+    Uses OpenCV SFace for face embedding/matching.
     """
     if not FACE_RECOGNITION_AVAILABLE:
         return None, "Face recognition library is not available."
     
     try:
-        # Load image with PIL and convert to numpy array
+        # Load image with PIL and convert to BGR numpy array (OpenCV format)
         image = Image.open(face_image_file).convert("RGB")
         image_np = np.array(image)
+        image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
         
-        # Find encodings
-        face_encodings = face_recognition.face_encodings(image_np)
-        if not face_encodings:
-            return None, "No face detected in the image. Please make sure your face is clearly visible."
-        if len(face_encodings) > 1:
-            return None, "Multiple faces detected. Please make sure only one person is in the frame."
-        
-        unknown_encoding = face_encodings[0]
+        # Extract face embedding using YuNet + SFace
+        unknown_embedding, err = extract_face_embedding(image_bgr)
+        if unknown_embedding is None:
+            return None, err
         
         # Load registry
         df = load_student_registry()
@@ -428,14 +529,17 @@ def match_face(face_image_file, tolerance=0.55):
         if not known_encodings:
             return None, "No registered face encodings found in the database. Please enroll students first."
             
-        # Compare faces
-        matches = face_recognition.compare_faces(known_encodings, unknown_encoding, tolerance=tolerance)
-        face_distances = face_recognition.face_distance(known_encodings, unknown_encoding)
+        # Compare faces using SFace cosine similarity
+        best_score = -1.0
+        best_idx = -1
+        for i, known_enc in enumerate(known_encodings):
+            is_match, score = compare_face_embeddings(known_enc, unknown_embedding, threshold=threshold)
+            if is_match and score > best_score:
+                best_score = score
+                best_idx = i
         
-        if True in matches:
-            best_match_idx = np.argmin(face_distances)
-            if matches[best_match_idx]:
-                return known_rolls[best_match_idx], None
+        if best_idx >= 0:
+            return known_rolls[best_idx], None
                 
         return None, "Face did not match any registered student in the database."
     except Exception as e:
@@ -481,12 +585,13 @@ def enroll_student(roll_number, face_image_file=None):
         try:
             image = Image.open(face_image_file).convert("RGB")
             image_np = np.array(image)
-            face_encodings = face_recognition.face_encodings(image_np)
-            if not face_encodings:
-                return False, "No face detected in the photo. Please capture/upload a clear picture of your face."
-            if len(face_encodings) > 1:
-                return False, "Multiple faces detected. Please make sure only one person is in the frame."
-            serialized_encoding = serialize_face_encoding(face_encodings[0])
+            image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+            
+            # Extract face embedding using YuNet + SFace
+            embedding, err = extract_face_embedding(image_bgr)
+            if embedding is None:
+                return False, err
+            serialized_encoding = serialize_face_encoding(embedding)
             
             # Save the face image to the registered_faces folder
             os.makedirs(REGISTERED_FACES_DIR, exist_ok=True)
@@ -586,10 +691,14 @@ def auto_scan_qr_from_camera(timeout=12):
     return None, error_msg or "No QR Code detected in the webcam feed."
 
 
-def auto_scan_face_from_camera(timeout=25, tolerance=0.58):
-    """Scan webcam video for a registered face, verify liveness via eye blink, and mark attendance."""
+def auto_scan_face_from_camera(timeout=25, threshold=0.363):
+    """Scan webcam video for a registered face, verify liveness via eye blink, and mark attendance.
+    Uses MediaPipe FaceMesh for detection/landmarks and OpenCV SFace for recognition."""
     if not FACE_RECOGNITION_AVAILABLE:
         return None, "Face recognition library is not available."
+
+    if not ensure_models_downloaded():
+        return None, "Face recognition models could not be loaded."
         
     df = load_student_registry()
     if df.empty:
@@ -642,6 +751,19 @@ def auto_scan_face_from_camera(timeout=25, tolerance=0.58):
     open_thresh = 0.25
     closed_thresh = 0.20
     
+    # Initialize MediaPipe FaceMesh and SFace recognizer
+    face_mesh = mp_face_mesh.FaceMesh(
+        static_image_mode=False,
+        max_num_faces=1,
+        refine_landmarks=True,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5
+    )
+    recognizer = get_face_recognizer()
+    
+    # Recognition throttle — only run SFace every N frames
+    recognition_interval = 5
+    
     while time.time() - start_ts < timeout:
         ret, frame = cap.read()
         if not ret:
@@ -652,14 +774,15 @@ def auto_scan_face_from_camera(timeout=25, tolerance=0.58):
         
         # Mirror the frame horizontally for intuitive self-viewing
         frame = cv2.flip(frame, 1)
+        h, w = frame.shape[:2]
         
-        # Convert BGR (OpenCV format) to RGB (face_recognition format)
+        # Convert BGR to RGB for MediaPipe
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
-        # Detect face locations
-        face_locations = face_recognition.face_locations(rgb_frame, model="hog")
+        # Run MediaPipe FaceMesh
+        results = face_mesh.process(rgb_frame)
         
-        if len(face_locations) == 0:
+        if results.multi_face_landmarks is None or len(results.multi_face_landmarks) == 0:
             # Face lost tracking
             if face_lost_timestamp is None:
                 face_lost_timestamp = time.time()
@@ -674,98 +797,104 @@ def auto_scan_face_from_camera(timeout=25, tolerance=0.58):
             # Face found, reset face lost timestamp
             face_lost_timestamp = None
             
-            # Use the first detected face
-            top, right, bottom, left = face_locations[0]
+            face_lm = results.multi_face_landmarks[0]
             
-            # Extract landmarks (extremely fast when passing face_locations)
-            landmarks_list = face_recognition.face_landmarks(rgb_frame, face_locations=[face_locations[0]])
+            # Extract landmarks for EAR/MAR/yaw
+            landmarks = get_landmarks_from_mediapipe(face_lm, w, h)
+            left_eye = landmarks["left_eye"]
+            right_eye = landmarks["right_eye"]
+            top_lip = landmarks["top_lip"]
+            bottom_lip = landmarks["bottom_lip"]
+            chin = landmarks["chin"]
+            nose_tip = landmarks["nose_tip"]
             
-            if landmarks_list:
-                landmarks = landmarks_list[0]
-                
-                # Extract landmark coordinates
-                left_eye = landmarks.get("left_eye", [])
-                right_eye = landmarks.get("right_eye", [])
-                top_lip = landmarks.get("top_lip", [])
-                bottom_lip = landmarks.get("bottom_lip", [])
-                chin = landmarks.get("chin", [])
-                nose_tip = landmarks.get("nose_tip", [])
-                
-                # Calculate real-time metrics
-                ear_l = calculate_ear(left_eye)
-                ear_r = calculate_ear(right_eye)
-                ear = (ear_l + ear_r) / 2.0
-                mar = calculate_mar(top_lip, bottom_lip)
-                yaw_ratio = calculate_yaw_ratio(chin, nose_tip)
-                
-                # --- STATE MACHINE ---
-                if matched_roll is None:
-                    # Phase 1: Identify Face
-                    face_encodings = face_recognition.face_encodings(rgb_frame, [face_locations[0]])
-                    if face_encodings:
-                        matches = face_recognition.compare_faces(known_encodings, face_encodings[0], tolerance=tolerance)
-                        face_distances = face_recognition.face_distance(known_encodings, face_encodings[0])
-                        if True in matches:
-                            best_match_idx = np.argmin(face_distances)
-                            if matches[best_match_idx]:
-                                matched_roll = known_rolls[best_match_idx]
+            # Calculate bounding box from all landmarks
+            all_x = [int(lm.x * w) for lm in face_lm.landmark]
+            all_y = [int(lm.y * h) for lm in face_lm.landmark]
+            left = max(0, min(all_x) - 10)
+            top = max(0, min(all_y) - 10)
+            right = min(w, max(all_x) + 10)
+            bottom = min(h, max(all_y) + 10)
+            
+            # Calculate real-time metrics
+            ear_l = calculate_ear(left_eye)
+            ear_r = calculate_ear(right_eye)
+            ear = (ear_l + ear_r) / 2.0
+            mar = calculate_mar(top_lip, bottom_lip)
+            yaw_ratio = calculate_yaw_ratio(chin, nose_tip)
+            
+            # --- STATE MACHINE ---
+            if matched_roll is None:
+                # Phase 1: Identify Face (throttled to every N frames for performance)
+                if frame_count % recognition_interval == 0:
+                    try:
+                        detector = get_face_detector(w, h)
+                        _, faces = detector.detect(frame)
+                        if faces is not None and len(faces) > 0:
+                            aligned_face = recognizer.alignCrop(frame, faces[0])
+                            face_emb = recognizer.feature(aligned_face).flatten()
+                            
+                            best_score = -1.0
+                            best_idx = -1
+                            for i, known_enc in enumerate(known_encodings):
+                                is_match, score = compare_face_embeddings(known_enc, face_emb, threshold=threshold)
+                                if is_match and score > best_score:
+                                    best_score = score
+                                    best_idx = i
+                            
+                            if best_idx >= 0:
+                                matched_roll = known_rolls[best_idx]
                                 challenge_timer = time.time()
                                 blink_detected = False
                                 eyes_fully_open = False
                                 ear_history = []
-                elif not liveness_verified:
-                    # Phase 2: Verify Liveness Challenges
-                    elapsed = time.time() - challenge_timer
-                    if elapsed > max_seconds_per_challenge:
-                        matched_roll = None
-                        blink_detected = False
-                        eyes_fully_open = False
-                        ear_history = []
-                        challenge_timer = time.time()
-                        continue
+                    except Exception:
+                        pass  # Skip recognition errors, try again next interval
+                        
+            elif not liveness_verified:
+                # Phase 2: Verify Liveness via blink detection
+                elapsed = time.time() - challenge_timer
+                if elapsed > max_seconds_per_challenge:
+                    matched_roll = None
+                    blink_detected = False
+                    eyes_fully_open = False
+                    ear_history = []
+                    challenge_timer = time.time()
+                    continue
 
-                    ear_history.append(ear)
-                    if len(ear_history) > 25:
-                        ear_history.pop(0)
+                ear_history.append(ear)
+                if len(ear_history) > 25:
+                    ear_history.pop(0)
 
-                    if len(ear_history) >= 10:
-                        sorted_ear = sorted(ear_history)
-                        base_ear = sorted_ear[int(len(sorted_ear) * 0.8)]
-                        open_thresh = min(max(0.20, base_ear * 0.90), 0.32)
-                        closed_thresh = max(min(0.25, base_ear * 0.80), 0.14)
-                    else:
-                        open_thresh = 0.24
-                        closed_thresh = 0.19
+                if len(ear_history) >= 10:
+                    sorted_ear = sorted(ear_history)
+                    base_ear = sorted_ear[int(len(sorted_ear) * 0.8)]
+                    open_thresh = min(max(0.20, base_ear * 0.90), 0.32)
+                    closed_thresh = max(min(0.25, base_ear * 0.80), 0.14)
+                else:
+                    open_thresh = 0.24
+                    closed_thresh = 0.19
 
-                    if ear > open_thresh:
-                        eyes_fully_open = True
-                    if eyes_fully_open and ear < closed_thresh:
-                        blink_detected = True
-                        blink_count += 1
+                if ear > open_thresh:
+                    eyes_fully_open = True
+                if eyes_fully_open and ear < closed_thresh:
+                    blink_detected = True
+                    blink_count += 1
 
-                    reopen_thresh = max(open_thresh - 0.08, closed_thresh + 0.02)
-                    if blink_detected and ear > reopen_thresh:
+                reopen_thresh = max(open_thresh - 0.08, closed_thresh + 0.02)
+                if blink_detected and ear > reopen_thresh:
+                    liveness_verified = True
+                    blink_detected = False
+                    blink_count = 0
+
+                if not liveness_verified and len(ear_history) >= 8:
+                    min_val = min(ear_history)
+                    min_idx = ear_history.index(min_val)
+                    max_before = max(ear_history[:min_idx]) if min_idx > 0 else min_val
+                    max_after = max(ear_history[min_idx+1:]) if min_idx < len(ear_history) - 1 else min_val
+                    min_open = max(0.22, open_thresh * 0.88)
+                    if (max_before - min_val) > 0.022 and (max_after - min_val) > 0.022 and min_val < min_open:
                         liveness_verified = True
-                        blink_detected = False
-                        blink_count = 0
-
-                    if not liveness_verified and len(ear_history) >= 8:
-                        min_val = min(ear_history)
-                        min_idx = ear_history.index(min_val)
-                        max_before = max(ear_history[:min_idx]) if min_idx > 0 else min_val
-                        max_after = max(ear_history[min_idx+1:]) if min_idx < len(ear_history) - 1 else min_val
-                        min_open = max(0.22, open_thresh * 0.88)
-                        if (max_before - min_val) > 0.022 and (max_after - min_val) > 0.022 and min_val < min_open:
-                            liveness_verified = True
-            else:
-                # Keep the matched face state when landmarks temporarily disappear during a blink.
-                if matched_roll is not None and not liveness_verified:
-                    if time.time() - challenge_timer > max_seconds_per_challenge:
-                        matched_roll = None
-                        blink_detected = False
-                        eyes_fully_open = False
-                        ear_history = []
-                        challenge_timer = time.time()
             
             # --- DRAW HUD ON FRAME ---
             # Set bounding box color depending on state
@@ -780,9 +909,8 @@ def auto_scan_face_from_camera(timeout=25, tolerance=0.58):
             cv2.rectangle(frame, (left, top), (right, bottom), box_color, 2)
             
             # Draw telemetry landmarks (dots) on eyes to look high-tech
-            if landmarks_list:
-                for eye_pt in left_eye + right_eye:
-                    cv2.circle(frame, eye_pt, 2, (0, 255, 255), -1)  # Yellow dots on eyes
+            for eye_pt in left_eye + right_eye:
+                cv2.circle(frame, eye_pt, 2, (0, 255, 255), -1)  # Yellow dots on eyes
                     
         # --- SEMI-TRANSPARENT TOP & BOTTOM HUD BANDS ---
         overlay = frame.copy()
@@ -839,6 +967,7 @@ def auto_scan_face_from_camera(timeout=25, tolerance=0.58):
             
         time.sleep(0.01)
         
+    face_mesh.close()
     cap.release()
     stframe.empty()
     status_text.empty()
@@ -1505,7 +1634,7 @@ else:
             if method == "Face Recognition":
                 st.subheader("👤 Secure Face Attendance Scanner")
                 if not FACE_RECOGNITION_AVAILABLE:
-                    st.warning("⚠️ Face recognition is not available. Please install 'face_recognition' library or use QR Code mode.")
+                    st.warning("⚠️ Face recognition is not available. Please install 'mediapipe' library or use QR Code mode.")
                 else:
                     st.markdown("""
                     <div class='section-note' style='border-left-color: #10b981; background: rgba(16, 185, 129, 0.05); margin-bottom: 15px; padding: 12px; border-radius: 8px;'>
