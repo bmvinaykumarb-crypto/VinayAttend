@@ -6,6 +6,5 @@ Pillow
 qrcode
 streamlit-js-eval
 geopy
-cmake
-dlib==19.24.2
+dlib-bin
 face_recognition
