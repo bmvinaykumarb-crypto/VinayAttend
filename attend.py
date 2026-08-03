@@ -664,72 +664,43 @@ def decode_qr_code(image_file):
         return None, f"Error decoding QR Code: {str(e)}"
 
 
-def auto_scan_qr_from_camera(timeout=12):
-    """Scan QR code from camera and return the decoded string data"""
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        return None, "Unable to open webcam. Please make sure your camera is connected and allowed."
+def scan_qr_from_image(image_file):
+    """Scan QR code from a camera_input or uploaded image file.
+    Uses the browser's default camera via st.camera_input (works on Streamlit Cloud, desktop, and mobile).
+    Returns (decoded_data, error_string)."""
+    if image_file is None:
+        return None, "No image provided."
     
-    start_ts = time.time()
-    detected_data = None
-    error_msg = None
-    
-    # Create a placeholder for the video feed
-    stframe = st.empty()
-    status_text = st.empty()
-    
-    detector = cv2.QRCodeDetector()
-    
-    while time.time() - start_ts < timeout:
-        ret, frame = cap.read()
-        if not ret:
-            error_msg = "Unable to read from webcam."
-            break
+    try:
+        file_bytes = np.asarray(bytearray(image_file.read()), dtype=np.uint8)
+        image_file.seek(0)
+        img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
         
-        # Detect and decode QR code
-        data, bbox, _ = detector.detectAndDecode(frame)
+        if img is None:
+            return None, "Failed to load captured image."
+        
+        detector = cv2.QRCodeDetector()
+        data, bbox, _ = detector.detectAndDecode(img)
         
         if data:
-            detected_data = data
-            # Draw green bounding box around the QR code if found
-            if bbox is not None and len(bbox) > 0:
-                pts = bbox[0].astype(int)
-                for i in range(len(pts)):
-                    pt1 = tuple(pts[i])
-                    pt2 = tuple(pts[(i + 1) % len(pts)])
-                    cv2.line(frame, pt1, pt2, (0, 255, 0), 3)
-            
-            # Convert to RGB for display
-            display_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            stframe.image(display_rgb)
-            status_text.success(f"✅ QR Code detected: {data}")
-            time.sleep(1) # Give user a moment to see the confirmation
-            break
-        else:
-            # Display frame without detection
-            display_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            stframe.image(display_rgb)
-            status_text.info("📷 Scanning... Present your QR Code to the camera.")
-        
-        time.sleep(0.05)
-    
-    cap.release()
-    stframe.empty()
-    status_text.empty()
-    
-    if detected_data:
-        return detected_data, None
-    return None, error_msg or "No QR Code detected in the webcam feed."
+            return data, None
+        return None, "No QR Code detected in the captured image. Please try again with clearer framing."
+    except Exception as e:
+        return None, f"Error scanning QR Code: {str(e)}"
 
 
-def auto_scan_face_from_camera(timeout=25, threshold=0.363):
-    """Scan webcam video for a registered face, verify liveness via eye blink, and mark attendance.
-    Uses MediaPipe FaceMesh for detection/landmarks and OpenCV SFace for recognition."""
+def verify_face_from_snapshot(image_file, threshold=0.363):
+    """Verify a face from a camera snapshot (st.camera_input) against registered students.
+    Uses the browser's default camera via st.camera_input (works on Streamlit Cloud, desktop, and mobile).
+    Returns (roll_number, error_string). On success error_string is None."""
     if not FACE_RECOGNITION_AVAILABLE:
         return None, "Face recognition library is not available."
 
     if not ensure_models_downloaded():
         return None, "Face recognition models could not be loaded."
+    
+    if image_file is None:
+        return None, "No image captured. Please take a photo."
         
     df = load_student_registry()
     if df.empty:
@@ -747,274 +718,103 @@ def auto_scan_face_from_camera(timeout=25, threshold=0.363):
             
     if not known_encodings:
         return None, "No registered face encodings found. Please enroll students first."
-        
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        return None, "Unable to open webcam. Please make sure your camera is connected and allowed."
-        
-    start_ts = time.time()
-    matched_roll = None
-    error_msg = None
-    
-    # Create placeholders
-    stframe = st.empty()
-    status_text = st.empty()
-    
-    # Liveness Detection State Variables (Eye Blink Only)
-    liveness_verified = False
-    
-    challenge_timer = time.time()
-    max_seconds_per_challenge = 15.0  # Give 15 seconds to blink
-    
-    face_lost_timestamp = None
-    frame_count = 0
-    face_match_streak = 0
-    required_match_streak = 2
-    
-    # Blink detection tracking state
-    eyes_fully_open = False
-    blink_detected = False
-    blink_count = 0
-    ear_history = []
-    
-    # Metrics display placeholders
-    ear, mar, yaw_ratio = 0.0, 0.0, 1.0
-    open_thresh = 0.25
-    closed_thresh = 0.20
-    
-    # Initialize MediaPipe FaceLandmarker (new 1.0 task-based API)
-    BaseOptions = mp.tasks.BaseOptions
-    FaceLandmarker = mp.tasks.vision.FaceLandmarker
-    FaceLandmarkerOptions = mp.tasks.vision.FaceLandmarkerOptions
-    VisionRunningMode = mp.tasks.vision.RunningMode
 
-    landmarker_options = FaceLandmarkerOptions(
-        base_options=BaseOptions(model_asset_path=FACE_LANDMARKER_PATH),
-        running_mode=VisionRunningMode.VIDEO,
-        num_faces=1,
-        min_face_detection_confidence=0.5,
-        min_face_presence_confidence=0.5,
-        min_tracking_confidence=0.5,
-    )
-    face_landmarker = FaceLandmarker.create_from_options(landmarker_options)
-    recognizer = get_face_recognizer()
+    try:
+        # Load image from the camera_input file
+        image = Image.open(image_file).convert("RGB")
+        image_np = np.array(image)
+        image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+        
+        # Extract face embedding
+        face_emb, err = extract_face_embedding(image_bgr)
+        if face_emb is None:
+            return None, err
+        
+        # Compare against all registered faces
+        best_score = -1.0
+        best_idx = -1
+        for i, known_enc in enumerate(known_encodings):
+            is_match, score = compare_face_embeddings(known_enc, face_emb, threshold=threshold)
+            if is_match and score > best_score:
+                best_score = score
+                best_idx = i
+        
+        if best_idx >= 0:
+            return known_rolls[best_idx], None
+        
+        return None, "Face did not match any registered student. Please try again with better lighting and face clearly visible."
+    except Exception as e:
+        return None, f"Error processing face snapshot: {str(e)}"
+
+
+def verify_liveness_from_snapshots(open_eyes_file, closed_eyes_file):
+    """Verify liveness by comparing EAR (Eye Aspect Ratio) between two snapshots:
+    one with eyes open and one with eyes closed.
+    Returns (is_live, message)."""
+    if not FACE_RECOGNITION_AVAILABLE:
+        return False, "Face recognition library is not available."
     
-    # Recognition throttle — only run SFace every N frames
-    recognition_interval = 5
+    if not ensure_models_downloaded():
+        return False, "Face recognition models could not be loaded."
     
-    while time.time() - start_ts < timeout:
-        ret, frame = cap.read()
-        if not ret:
-            error_msg = "Unable to read from webcam."
-            break
+    if open_eyes_file is None or closed_eyes_file is None:
+        return False, "Both photos are required for liveness verification."
+    
+    try:
+        # Initialize MediaPipe Face Mesh for landmark detection
+        mp_face_mesh = mp.solutions.face_mesh
+        face_mesh = mp_face_mesh.FaceMesh(
+            static_image_mode=True,
+            max_num_faces=1,
+            min_detection_confidence=0.5,
+        )
+        
+        def get_ear_from_image(img_file):
+            """Get average EAR from an image file."""
+            image = Image.open(img_file).convert("RGB")
+            image_np = np.array(image)
+            h, w = image_np.shape[:2]
             
-        frame_count += 1
-        
-        # Mirror the frame horizontally for intuitive self-viewing
-        frame = cv2.flip(frame, 1)
-        h, w = frame.shape[:2]
-        
-        # Convert BGR to RGB for MediaPipe
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Run MediaPipe FaceLandmarker (task-based API)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-        timestamp_ms = int((time.time() - start_ts) * 1000)
-        results = face_landmarker.detect_for_video(mp_image, timestamp_ms)
-        
-        if not results.face_landmarks:
-            # Face lost tracking
-            if face_lost_timestamp is None:
-                face_lost_timestamp = time.time()
-            elif time.time() - face_lost_timestamp > 4.0:
-                # Reset identification and challenge state only after several seconds of loss
-                matched_roll = None
-                blink_detected = False
-                eyes_fully_open = False
-                ear_history = []
-                challenge_timer = time.time()
-        else:
-            # Face found, reset face lost timestamp
-            face_lost_timestamp = None
+            results = face_mesh.process(image_np)
+            if not results.multi_face_landmarks:
+                return None, "No face detected in the image."
             
-            face_lm = results.face_landmarks[0]
-            
-            # Extract landmarks for EAR/MAR/yaw
+            face_lm = results.multi_face_landmarks[0].landmark
             landmarks = get_landmarks_from_mediapipe(face_lm, w, h)
-            left_eye = landmarks["left_eye"]
-            right_eye = landmarks["right_eye"]
-            top_lip = landmarks["top_lip"]
-            bottom_lip = landmarks["bottom_lip"]
-            chin = landmarks["chin"]
-            nose_tip = landmarks["nose_tip"]
             
-            # Calculate bounding box from all landmarks
-            all_x = [int(lm.x * w) for lm in face_lm]
-            all_y = [int(lm.y * h) for lm in face_lm]
-            left = max(0, min(all_x) - 10)
-            top = max(0, min(all_y) - 10)
-            right = min(w, max(all_x) + 10)
-            bottom = min(h, max(all_y) + 10)
-            
-            # Calculate real-time metrics
-            ear_l = calculate_ear(left_eye)
-            ear_r = calculate_ear(right_eye)
-            ear = (ear_l + ear_r) / 2.0
-            mar = calculate_mar(top_lip, bottom_lip)
-            yaw_ratio = calculate_yaw_ratio(chin, nose_tip)
-            
-            # --- STATE MACHINE ---
-            if matched_roll is None:
-                # Phase 1: Identify Face (throttled to every N frames for performance)
-                if frame_count % recognition_interval == 0:
-                    try:
-                        detector = get_face_detector(w, h)
-                        _, faces = detector.detect(frame)
-                        if faces is not None and len(faces) > 0:
-                            aligned_face = recognizer.alignCrop(frame, faces[0])
-                            face_emb = recognizer.feature(aligned_face).flatten()
-                            
-                            best_score = -1.0
-                            best_idx = -1
-                            for i, known_enc in enumerate(known_encodings):
-                                is_match, score = compare_face_embeddings(known_enc, face_emb, threshold=threshold)
-                                if is_match and score > best_score:
-                                    best_score = score
-                                    best_idx = i
-                            
-                            if best_idx >= 0:
-                                matched_roll = known_rolls[best_idx]
-                                challenge_timer = time.time()
-                                blink_detected = False
-                                eyes_fully_open = False
-                                ear_history = []
-                    except Exception:
-                        pass  # Skip recognition errors, try again next interval
-                        
-            elif not liveness_verified:
-                # Phase 2: Verify Liveness via blink detection
-                elapsed = time.time() - challenge_timer
-                if elapsed > max_seconds_per_challenge:
-                    matched_roll = None
-                    blink_detected = False
-                    eyes_fully_open = False
-                    ear_history = []
-                    challenge_timer = time.time()
-                    continue
-
-                ear_history.append(ear)
-                if len(ear_history) > 25:
-                    ear_history.pop(0)
-
-                if len(ear_history) >= 10:
-                    sorted_ear = sorted(ear_history)
-                    base_ear = sorted_ear[int(len(sorted_ear) * 0.8)]
-                    open_thresh = min(max(0.20, base_ear * 0.90), 0.32)
-                    closed_thresh = max(min(0.25, base_ear * 0.80), 0.14)
-                else:
-                    open_thresh = 0.24
-                    closed_thresh = 0.19
-
-                if ear > open_thresh:
-                    eyes_fully_open = True
-                if eyes_fully_open and ear < closed_thresh:
-                    blink_detected = True
-                    blink_count += 1
-
-                reopen_thresh = max(open_thresh - 0.08, closed_thresh + 0.02)
-                if blink_detected and ear > reopen_thresh:
-                    liveness_verified = True
-                    blink_detected = False
-                    blink_count = 0
-
-                if not liveness_verified and len(ear_history) >= 8:
-                    min_val = min(ear_history)
-                    min_idx = ear_history.index(min_val)
-                    max_before = max(ear_history[:min_idx]) if min_idx > 0 else min_val
-                    max_after = max(ear_history[min_idx+1:]) if min_idx < len(ear_history) - 1 else min_val
-                    min_open = max(0.22, open_thresh * 0.88)
-                    if (max_before - min_val) > 0.022 and (max_after - min_val) > 0.022 and min_val < min_open:
-                        liveness_verified = True
-            
-            # --- DRAW HUD ON FRAME ---
-            # Set bounding box color depending on state
-            if liveness_verified:
-                box_color = (0, 255, 0)  # Green
-            elif matched_roll is not None:
-                box_color = (0, 165, 255)  # Orange/Gold
-            else:
-                box_color = (255, 255, 255)  # White
-                
-            # Draw face box
-            cv2.rectangle(frame, (left, top), (right, bottom), box_color, 2)
-            
-            # Draw telemetry landmarks (dots) on eyes to look high-tech
-            for eye_pt in left_eye + right_eye:
-                cv2.circle(frame, eye_pt, 2, (0, 255, 255), -1)  # Yellow dots on eyes
-                    
-        # --- SEMI-TRANSPARENT TOP & BOTTOM HUD BANDS ---
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (0, 0), (frame.shape[1], 55), (15, 15, 15), -1)
-        cv2.rectangle(overlay, (0, frame.shape[0] - 90), (frame.shape[1], frame.shape[0]), (15, 15, 15), -1)
-        cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
+            ear_l = calculate_ear(landmarks["left_eye"])
+            ear_r = calculate_ear(landmarks["right_eye"])
+            avg_ear = (ear_l + ear_r) / 2.0
+            return avg_ear, None
         
-        # Write Title and Status on Top Bar
-        if liveness_verified:
-            status_title = "LIVENESS VERIFIED"
-            status_color = (0, 255, 0)  # Green
-        elif matched_roll is not None:
-            status_title = f"IDENTIFIED: STUDENT {matched_roll}"
-            status_color = (0, 165, 255)  # Orange
+        # Get EAR from both images
+        ear_open, err1 = get_ear_from_image(open_eyes_file)
+        if ear_open is None:
+            return False, f"Eyes-open photo: {err1}"
+        
+        # Reset file pointer for closed eyes image
+        closed_eyes_file.seek(0)
+        ear_closed, err2 = get_ear_from_image(closed_eyes_file)
+        if ear_closed is None:
+            return False, f"Eyes-closed photo: {err2}"
+        
+        face_mesh.close()
+        
+        # The EAR difference should be significant between open and closed eyes
+        ear_diff = ear_open - ear_closed
+        
+        if ear_open < 0.18:
+            return False, "Your eyes appear closed in the first photo. Please retake with eyes wide open."
+        
+        if ear_diff > 0.04:
+            return True, "Liveness verified successfully! Eye blink pattern confirmed."
+        elif ear_closed < ear_open * 0.85:
+            return True, "Liveness verified successfully! Eye closure detected."
         else:
-            status_title = "SCANNING FOR REGISTERED FACE..."
-            status_color = (255, 255, 0)  # Cyan
-            
-        cv2.putText(frame, status_title, (15, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.65, status_color, 2, cv2.LINE_AA)
-        
-        # Write Live Telemetry on the Right Side
-        cv2.putText(frame, f"EAR: {ear:.2f}", (frame.shape[1] - 110, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(frame, f"MAR: {mar:.2f}", (frame.shape[1] - 110, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(frame, f"YAW: {yaw_ratio:.2f}", (frame.shape[1] - 110, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
-        
-        # Write Challenge Checklist on Bottom Bar
-        if matched_roll is None:
-            cv2.putText(frame, "Position your face clearly in the camera feed.", (15, frame.shape[0] - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1, cv2.LINE_AA)
-            cv2.putText(frame, "Verification will begin automatically upon matching.", (15, frame.shape[0] - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 150), 1, cv2.LINE_AA)
-        else:
-            # Challenges status
-            c_status = "[ OK ]" if liveness_verified else f"[ACTIVE ({max_seconds_per_challenge - (time.time() - challenge_timer):.1f}s)]"
-            c_color = (0, 255, 0) if liveness_verified else (0, 165, 255)
-            
-            cv2.putText(frame, f"Liveness Check: Blink your eyes -> {c_status}", (15, frame.shape[0] - 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, c_color, 1, cv2.LINE_AA)
-            cv2.putText(frame, f"EAR Telemetry: current={ear:.2f} | target closed<{closed_thresh:.2f}", (15, frame.shape[0] - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 1, cv2.LINE_AA)
-            
-            if not liveness_verified and blink_detected:
-                cv2.putText(frame, "Eyes closed... Open them!", (frame.shape[1] - 200, frame.shape[0] - 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
-                
-        # Display the frame in Streamlit
-        display_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        stframe.image(display_rgb)
-        
-        # Display messages in Streamlit status_text
-        if liveness_verified:
-            status_text.success(f"✅ Match & Liveness Verified: Student {matched_roll}")
-            time.sleep(2.0)
-            break
-        elif matched_roll is not None:
-            status_text.warning("🔒 Liveness Challenge: Please blink your eyes!")
-        else:
-            status_text.info("📷 Scanning... Position your face clearly in front of the camera.")
-            
-        time.sleep(0.01)
-        
-    face_landmarker.close()
-    cap.release()
-    stframe.empty()
-    status_text.empty()
+            return False, f"Liveness check failed. Please ensure eyes are clearly open in the first photo and clearly closed in the second. (EAR open: {ear_open:.3f}, closed: {ear_closed:.3f})"
     
-    if liveness_verified and matched_roll:
-        return matched_roll, None
-    return None, error_msg or "Liveness verification failed or timed out."
+    except Exception as e:
+        return False, f"Liveness check error: {str(e)}"
 
 
 def play_siri_voice(success, roll_number=""):
@@ -1678,69 +1478,87 @@ else:
                 else:
                     st.markdown("""
                     <div class='section-note' style='border-left-color: #10b981; background: rgba(16, 185, 129, 0.05); margin-bottom: 15px; padding: 12px; border-radius: 8px;'>
-                        <strong>🛡️ Liveness Detection Protocol:</strong> The face recognition scanner requires you to blink your eyes to verify that you are a live person. Static photos or device screen displays will be rejected.
+                        <strong>🛡️ Liveness Detection Protocol:</strong> Take two photos — first with eyes <strong>OPEN</strong>, then with eyes <strong>CLOSED</strong> — to verify you are a live person. Static photos or device screen displays will be rejected.
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    if st.button("📷 Start Live Face Scanner", key="start_live_face_scanner_btn", type="primary", use_container_width=True):
-                        st.info("🎥 Starting camera feed... Please look directly at the webcam.")
-                        roll_number, err = auto_scan_face_from_camera(timeout=25)
+                    # Initialize face scan session state
+                    if 'face_scan_step' not in st.session_state:
+                        st.session_state.face_scan_step = 0  # 0=not started, 1=eyes open captured, 2=done
+                    if 'face_scan_roll' not in st.session_state:
+                        st.session_state.face_scan_roll = None
+                    
+                    # Step 1: Capture face with eyes OPEN
+                    st.markdown("**Step 1:** 📸 Take a photo with your **eyes OPEN** (for face recognition)")
+                    face_open_photo = st.camera_input("Capture face (eyes open):", key="face_open_cam")
+                    
+                    if face_open_photo is not None and st.session_state.face_scan_step == 0:
+                        with st.spinner("🔍 Identifying face..."):
+                            roll_number, err = verify_face_from_snapshot(face_open_photo)
                         if roll_number:
-                            success, msg = mark_attendance(roll_number, lab_choice)
-                            if success:
-                                play_siri_voice(True, roll_number)
-                                st.balloons()
-                                show_scan_popup(True, msg, roll_number)
-                            else:
-                                play_siri_voice(False, roll_number)
-                                show_scan_popup(False, msg, roll_number)
-                            st.rerun()
+                            st.session_state.face_scan_step = 1
+                            st.session_state.face_scan_roll = roll_number
+                            st.success(f"✅ Face matched: Student **{roll_number}**. Now take the liveness photo below.")
                         elif err:
                             st.error(f"Face verification failed: {err}")
+                    
+                    # Step 2: Capture face with eyes CLOSED (liveness check)
+                    if st.session_state.face_scan_step >= 1 and st.session_state.face_scan_roll:
+                        st.markdown(f"**Step 2:** 😑 Now take a photo with your **eyes CLOSED** (liveness check for **{st.session_state.face_scan_roll}**)")
+                        face_closed_photo = st.camera_input("Capture face (eyes closed):", key="face_closed_cam")
+                        
+                        if face_closed_photo is not None and face_open_photo is not None:
+                            with st.spinner("🔒 Verifying liveness..."):
+                                face_open_photo.seek(0)
+                                is_live, live_msg = verify_liveness_from_snapshots(face_open_photo, face_closed_photo)
+                            
+                            if is_live:
+                                roll_number = st.session_state.face_scan_roll
+                                success, msg = mark_attendance(roll_number, lab_choice)
+                                if success:
+                                    play_siri_voice(True, roll_number)
+                                    st.balloons()
+                                    show_scan_popup(True, msg, roll_number)
+                                else:
+                                    play_siri_voice(False, roll_number)
+                                    show_scan_popup(False, msg, roll_number)
+                                # Reset state
+                                st.session_state.face_scan_step = 0
+                                st.session_state.face_scan_roll = None
+                                st.rerun()
+                            else:
+                                st.error(f"🚫 Liveness check failed: {live_msg}")
+                                st.info("Please retake both photos. Make sure eyes are clearly open in Step 1 and clearly closed in Step 2.")
+                                st.session_state.face_scan_step = 0
+                                st.session_state.face_scan_roll = None
+                    
+                    # Reset button
+                    if st.session_state.face_scan_step > 0:
+                        if st.button("🔄 Reset Face Scanner", key="reset_face_scanner_btn"):
+                            st.session_state.face_scan_step = 0
+                            st.session_state.face_scan_roll = None
+                            st.rerun()
                             
             else:
-                st.subheader("📷 Automatic QR Code Scanner")
-                st.write("Use your webcam for automatic QR Code scanning and attendance marking.")
+                st.subheader("📷 QR Code Scanner")
+                st.write("Use your device camera to scan a QR Code for attendance marking.")
 
-                auto_scan_mode = st.checkbox(
-                    "Enable automatic QR scanner",
-                    value=st.session_state.auto_scan_active,
-                    key="auto_scan_active",
-                    help="Present your printed/digital QR code to the webcam to mark attendance."
-                )
-
-                if auto_scan_mode:
-                    st.info("🎥 Scanning from your webcam. Present your QR Code clearly.")
-                    roll_number, err = auto_scan_qr_from_camera(timeout=12)
-                    if roll_number:
-                        registry = load_student_registry()
-                        registered_rolls = registry["Roll Number"].astype(str).tolist()
-                        if not registered_rolls or roll_number in registered_rolls:
-                            success, msg = mark_attendance(roll_number, lab_choice)
-                        else:
-                            success = False
-                            msg = f"Student '{roll_number}' is not registered in the student database. Register them first."
-                        
-                        if success:
-                            play_siri_voice(True, roll_number)
-                            st.balloons()
-                            show_scan_popup(True, msg, roll_number)
-                        else:
-                            play_siri_voice(False, roll_number)
-                            show_scan_popup(False, msg, roll_number)
-                    elif err:
-                        st.error(f"QR Scanning failed: {err}")
-
-                st.markdown("---", unsafe_allow_html=True)
-                st.write("Manual upload / capture:")
-                qr_file = st.file_uploader("Upload QR Code image:", type=["png", "jpg", "jpeg"], key="qr_file_uploader")
-                st.write("--- or ---")
-                st.write("Use Camera Capture:")
-                qr_camera = st.camera_input("Capture QR snapshot:", key="qr_camera_input")
+                st.markdown("**📸 Capture QR Code from Camera:**")
+                qr_camera = st.camera_input("Point your camera at the QR Code and capture:", key="qr_camera_input")
                 
-                scanned_file = qr_file or qr_camera
+                st.markdown("**--- or ---**")
+                st.markdown("**📁 Upload QR Code image:**")
+                qr_file = st.file_uploader("Upload QR Code image:", type=["png", "jpg", "jpeg"], key="qr_file_uploader")
+                
+                scanned_file = qr_camera or qr_file
                 if scanned_file is not None:
-                    roll_number, err = decode_qr_code(scanned_file)
+                    # Try scanning with both QR methods
+                    roll_number, err = scan_qr_from_image(scanned_file)
+                    if roll_number is None:
+                        # Fallback to decode_qr_code
+                        scanned_file.seek(0)
+                        roll_number, err = decode_qr_code(scanned_file)
+                    
                     if roll_number:
                         registry = load_student_registry()
                         registered_rolls = registry["Roll Number"].astype(str).tolist()
