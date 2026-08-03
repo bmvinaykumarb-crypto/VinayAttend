@@ -761,13 +761,20 @@ def verify_liveness_from_snapshots(open_eyes_file, closed_eyes_file):
         return False, "Both photos are required for liveness verification."
     
     try:
-        # Initialize MediaPipe Face Mesh for landmark detection
-        mp_face_mesh = mp.solutions.face_mesh
-        face_mesh = mp_face_mesh.FaceMesh(
-            static_image_mode=True,
-            max_num_faces=1,
-            min_detection_confidence=0.5,
+        # Initialize MediaPipe FaceLandmarker (task-based API — compatible with Streamlit Cloud)
+        BaseOptions = mp.tasks.BaseOptions
+        FaceLandmarker = mp.tasks.vision.FaceLandmarker
+        FaceLandmarkerOptions = mp.tasks.vision.FaceLandmarkerOptions
+        VisionRunningMode = mp.tasks.vision.RunningMode
+
+        landmarker_options = FaceLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=FACE_LANDMARKER_PATH),
+            running_mode=VisionRunningMode.IMAGE,
+            num_faces=1,
+            min_face_detection_confidence=0.5,
+            min_face_presence_confidence=0.5,
         )
+        face_landmarker = FaceLandmarker.create_from_options(landmarker_options)
         
         def get_ear_from_image(img_file):
             """Get average EAR from an image file."""
@@ -775,11 +782,12 @@ def verify_liveness_from_snapshots(open_eyes_file, closed_eyes_file):
             image_np = np.array(image)
             h, w = image_np.shape[:2]
             
-            results = face_mesh.process(image_np)
-            if not results.multi_face_landmarks:
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_np)
+            results = face_landmarker.detect(mp_image)
+            if not results.face_landmarks:
                 return None, "No face detected in the image."
             
-            face_lm = results.multi_face_landmarks[0].landmark
+            face_lm = results.face_landmarks[0]
             landmarks = get_landmarks_from_mediapipe(face_lm, w, h)
             
             ear_l = calculate_ear(landmarks["left_eye"])
@@ -798,7 +806,7 @@ def verify_liveness_from_snapshots(open_eyes_file, closed_eyes_file):
         if ear_closed is None:
             return False, f"Eyes-closed photo: {err2}"
         
-        face_mesh.close()
+        face_landmarker.close()
         
         # The EAR difference should be significant between open and closed eyes
         ear_diff = ear_open - ear_closed
