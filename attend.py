@@ -1486,66 +1486,29 @@ else:
                 else:
                     st.markdown("""
                     <div class='section-note' style='border-left-color: #10b981; background: rgba(16, 185, 129, 0.05); margin-bottom: 15px; padding: 12px; border-radius: 8px;'>
-                        <strong>🛡️ Liveness Detection Protocol:</strong> Take two photos — first with eyes <strong>OPEN</strong>, then with eyes <strong>CLOSED</strong> — to verify you are a live person. Static photos or device screen displays will be rejected.
+                        <strong>📸 Face Scan:</strong> Take a photo using your device camera. Your face will be automatically detected and matched against registered students.
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    # Initialize face scan session state
-                    if 'face_scan_step' not in st.session_state:
-                        st.session_state.face_scan_step = 0  # 0=not started, 1=eyes open captured, 2=done
-                    if 'face_scan_roll' not in st.session_state:
-                        st.session_state.face_scan_roll = None
+                    # Single step: capture face photo → auto-detect → mark attendance
+                    face_photo = st.camera_input("📷 Capture your face:", key="face_scan_cam")
                     
-                    # Step 1: Capture face with eyes OPEN
-                    st.markdown("**Step 1:** 📸 Take a photo with your **eyes OPEN** (for face recognition)")
-                    face_open_photo = st.camera_input("Capture face (eyes open):", key="face_open_cam")
-                    
-                    if face_open_photo is not None and st.session_state.face_scan_step == 0:
+                    if face_photo is not None:
                         with st.spinner("🔍 Identifying face..."):
-                            roll_number, err = verify_face_from_snapshot(face_open_photo)
+                            roll_number, err = verify_face_from_snapshot(face_photo)
+                        
                         if roll_number:
-                            st.session_state.face_scan_step = 1
-                            st.session_state.face_scan_roll = roll_number
-                            st.success(f"✅ Face matched: Student **{roll_number}**. Now take the liveness photo below.")
+                            success, msg = mark_attendance(roll_number, lab_choice)
+                            if success:
+                                play_siri_voice(True, roll_number)
+                                st.balloons()
+                                show_scan_popup(True, msg, roll_number)
+                            else:
+                                play_siri_voice(False, roll_number)
+                                show_scan_popup(False, msg, roll_number)
+                            st.rerun()
                         elif err:
                             st.error(f"Face verification failed: {err}")
-                    
-                    # Step 2: Capture face with eyes CLOSED (liveness check)
-                    if st.session_state.face_scan_step >= 1 and st.session_state.face_scan_roll:
-                        st.markdown(f"**Step 2:** 😑 Now take a photo with your **eyes CLOSED** (liveness check for **{st.session_state.face_scan_roll}**)")
-                        face_closed_photo = st.camera_input("Capture face (eyes closed):", key="face_closed_cam")
-                        
-                        if face_closed_photo is not None and face_open_photo is not None:
-                            with st.spinner("🔒 Verifying liveness..."):
-                                face_open_photo.seek(0)
-                                is_live, live_msg = verify_liveness_from_snapshots(face_open_photo, face_closed_photo)
-                            
-                            if is_live:
-                                roll_number = st.session_state.face_scan_roll
-                                success, msg = mark_attendance(roll_number, lab_choice)
-                                if success:
-                                    play_siri_voice(True, roll_number)
-                                    st.balloons()
-                                    show_scan_popup(True, msg, roll_number)
-                                else:
-                                    play_siri_voice(False, roll_number)
-                                    show_scan_popup(False, msg, roll_number)
-                                # Reset state
-                                st.session_state.face_scan_step = 0
-                                st.session_state.face_scan_roll = None
-                                st.rerun()
-                            else:
-                                st.error(f"🚫 Liveness check failed: {live_msg}")
-                                st.info("Please retake both photos. Make sure eyes are clearly open in Step 1 and clearly closed in Step 2.")
-                                st.session_state.face_scan_step = 0
-                                st.session_state.face_scan_roll = None
-                    
-                    # Reset button
-                    if st.session_state.face_scan_step > 0:
-                        if st.button("🔄 Reset Face Scanner", key="reset_face_scanner_btn"):
-                            st.session_state.face_scan_step = 0
-                            st.session_state.face_scan_roll = None
-                            st.rerun()
                             
             else:
                 st.subheader("📷 QR Code Scanner")
