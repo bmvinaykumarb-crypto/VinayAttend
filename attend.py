@@ -89,8 +89,22 @@ def ensure_models_downloaded():
     return True
 
 
+_models_checked = False
+
+
+def ensure_models_cached():
+    """Check models once per process lifetime instead of every call."""
+    global _models_checked
+    if _models_checked:
+        return True
+    result = ensure_models_downloaded()
+    if result:
+        _models_checked = True
+    return result
+
+
 def get_face_detector(image_width, image_height):
-    """Get OpenCV YuNet face detector."""
+    """Get OpenCV YuNet face detector (lightweight, re-created per image size)."""
     detector = cv2.FaceDetectorYN.create(
         YUNET_MODEL_PATH, "", (image_width, image_height),
         score_threshold=0.6, nms_threshold=0.3, top_k=5000
@@ -98,16 +112,30 @@ def get_face_detector(image_width, image_height):
     return detector
 
 
+@st.cache_resource
 def get_face_recognizer():
-    """Get OpenCV SFace face recognizer."""
+    """Get OpenCV SFace face recognizer — cached so the 37MB ONNX model loads only once."""
     return cv2.FaceRecognizerSF.create(SFACE_MODEL_PATH, "")
+
+
+def _downscale_image(image_np, max_dim=640):
+    """Downscale image to max_dim on the longest side for faster detection."""
+    h, w = image_np.shape[:2]
+    if max(h, w) <= max_dim:
+        return image_np
+    scale = max_dim / max(h, w)
+    new_w, new_h = int(w * scale), int(h * scale)
+    return cv2.resize(image_np, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
 
 def extract_face_embedding(image_np):
     """Extract 128-d face embedding from an image using YuNet + SFace.
     Returns (embedding_array, error_string). On success error_string is None."""
-    if not ensure_models_downloaded():
+    if not ensure_models_cached():
         return None, "Face recognition models are not available."
+
+    # Downscale for faster face detection
+    image_np = _downscale_image(image_np, max_dim=640)
 
     h, w = image_np.shape[:2]
     detector = get_face_detector(w, h)
@@ -125,14 +153,13 @@ def extract_face_embedding(image_np):
 
 
 def compare_face_embeddings(emb1, emb2, threshold=0.363):
-    """Compare two face embeddings using cosine similarity.
+    """Compare two face embeddings using cosine similarity (numpy — no model reload).
     Returns (is_match, similarity_score)."""
-    recognizer = get_face_recognizer()
-    score = recognizer.match(
-        emb1.reshape(1, -1).astype(np.float32),
-        emb2.reshape(1, -1).astype(np.float32),
-        cv2.FaceRecognizerSF_FR_COSINE
-    )
+    emb1 = emb1.flatten().astype(np.float64)
+    emb2 = emb2.flatten().astype(np.float64)
+    dot = np.dot(emb1, emb2)
+    norm = np.linalg.norm(emb1) * np.linalg.norm(emb2)
+    score = dot / norm if norm > 0 else 0.0
     return score >= threshold, score
 
 
@@ -420,6 +447,8 @@ def save_student_registry(df):
                 (str(row["Roll Number"]), str(row.get("Registration Date", "")), str(row.get("Face Encoding", "")), str(row.get("Face Path", "")))
             )
         conn.commit()
+    # Invalidate the cached embeddings so new enrollments are picked up immediately
+    _load_cached_embeddings.clear()
 
 def load_faculties_registry():
     with get_db_connection() as conn:
@@ -521,6 +550,21 @@ def get_landmarks_from_mediapipe(face_landmarks, w, h):
     }
 
 
+@st.cache_data(ttl=60)
+def _load_cached_embeddings():
+    """Load and deserialize all registered student embeddings — cached for 60s."""
+    df = load_student_registry()
+    known_encodings = []
+    known_rolls = []
+    for _, row in df.iterrows():
+        enc_str = row.get("Face Encoding", "")
+        enc = deserialize_face_encoding(enc_str)
+        if enc is not None:
+            known_encodings.append(enc)
+            known_rolls.append(str(row["Roll Number"]))
+    return known_encodings, known_rolls
+
+
 def match_face(face_image_file, threshold=0.363):
     """
     Given an uploaded or captured image file, detect the face,
@@ -542,25 +586,13 @@ def match_face(face_image_file, threshold=0.363):
         if unknown_embedding is None:
             return None, err
         
-        # Load registry
-        df = load_student_registry()
-        if df.empty:
-            return None, "No students registered in the database."
-        
-        known_encodings = []
-        known_rolls = []
-        
-        for _, row in df.iterrows():
-            enc_str = row.get("Face Encoding", "")
-            enc = deserialize_face_encoding(enc_str)
-            if enc is not None:
-                known_encodings.append(enc)
-                known_rolls.append(str(row["Roll Number"]))
-                
-        if not known_encodings:
+        # Load cached embeddings (avoids DB + JSON parse on every scan)
+        known_encodings, known_rolls = _load_cached_embeddings()
+
+        if not known_rolls:
             return None, "No registered face encodings found in the database. Please enroll students first."
             
-        # Compare faces using SFace cosine similarity
+        # Compare faces using numpy cosine similarity (fast, no model reload)
         best_score = -1.0
         best_idx = -1
         for i, known_enc in enumerate(known_encodings):
@@ -696,26 +728,15 @@ def verify_face_from_snapshot(image_file, threshold=0.363):
     if not FACE_RECOGNITION_AVAILABLE:
         return None, "Face recognition library is not available."
 
-    if not ensure_models_downloaded():
+    if not ensure_models_cached():
         return None, "Face recognition models could not be loaded."
     
     if image_file is None:
         return None, "No image captured. Please take a photo."
-        
-    df = load_student_registry()
-    if df.empty:
-        return None, "No students registered in the student registry database."
-        
-    known_encodings = []
-    known_rolls = []
-    
-    for _, row in df.iterrows():
-        enc_str = row.get("Face Encoding", "")
-        enc = deserialize_face_encoding(enc_str)
-        if enc is not None:
-            known_encodings.append(enc)
-            known_rolls.append(str(row["Roll Number"]))
-            
+
+    # Use cached embeddings (avoids re-loading DB + JSON parse)
+    known_encodings, known_rolls = _load_cached_embeddings()
+
     if not known_encodings:
         return None, "No registered face encodings found. Please enroll students first."
 
@@ -725,12 +746,12 @@ def verify_face_from_snapshot(image_file, threshold=0.363):
         image_np = np.array(image)
         image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
         
-        # Extract face embedding
+        # Extract face embedding (image is downscaled inside)
         face_emb, err = extract_face_embedding(image_bgr)
         if face_emb is None:
             return None, err
         
-        # Compare against all registered faces
+        # Compare against all registered faces (numpy cosine — fast)
         best_score = -1.0
         best_idx = -1
         for i, known_enc in enumerate(known_encodings):
@@ -754,7 +775,7 @@ def verify_liveness_from_snapshots(open_eyes_file, closed_eyes_file):
     if not FACE_RECOGNITION_AVAILABLE:
         return False, "Face recognition library is not available."
     
-    if not ensure_models_downloaded():
+    if not ensure_models_cached():
         return False, "Face recognition models could not be loaded."
     
     if open_eyes_file is None or closed_eyes_file is None:
