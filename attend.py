@@ -36,6 +36,14 @@ try:
 except (ImportError, AttributeError):
     FACE_RECOGNITION_AVAILABLE = False
 
+try:
+    from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode, RTCConfiguration
+    import av
+    import threading
+    WEBRTC_AVAILABLE = True
+except ImportError:
+    WEBRTC_AVAILABLE = False
+
 # --- OpenCV SFace for face recognition/embedding ---
 SFACE_MODEL_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
 YUNET_MODEL_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
@@ -549,6 +557,94 @@ def get_landmarks_from_mediapipe(face_landmarks, w, h):
         "nose_tip": [lm_to_px(i) for i in MP_NOSE_TIP],
     }
 
+
+@st.cache_resource
+def get_face_landmarker():
+    """Get MediaPipe FaceLandmarker — cached so the model loads only once for speed."""
+    if not FACE_RECOGNITION_AVAILABLE:
+        return None
+    ensure_models_cached()
+    BaseOptions = mp.tasks.BaseOptions
+    FaceLandmarker = mp.tasks.vision.FaceLandmarker
+    FaceLandmarkerOptions = mp.tasks.vision.FaceLandmarkerOptions
+    VisionRunningMode = mp.tasks.vision.RunningMode
+
+    landmarker_options = FaceLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=FACE_LANDMARKER_PATH),
+        running_mode=VisionRunningMode.IMAGE,
+        num_faces=1,
+        min_face_detection_confidence=0.5,
+        min_face_presence_confidence=0.5,
+    )
+    return FaceLandmarker.create_from_options(landmarker_options)
+
+if WEBRTC_AVAILABLE:
+    class LivenessVideoProcessor(VideoProcessorBase):
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.blink_count = 0
+            self.is_live = False
+            self.face_embedding = None
+            self.snapshot = None
+            self.eyes_were_closed = False
+            self.landmarker = get_face_landmarker()
+            
+        def recv(self, frame):
+            img = frame.to_ndarray(format="bgr24")
+            
+            with self.lock:
+                if self.is_live:
+                    cv2.putText(img, "Liveness Verified! Click 'Mark Attendance'", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+            rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            h, w = rgb_img.shape[:2]
+            
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_img)
+            
+            if self.landmarker is not None:
+                results = self.landmarker.detect(mp_image)
+                
+                if results.face_landmarks:
+                    face_lm = results.face_landmarks[0]
+                    landmarks = get_landmarks_from_mediapipe(face_lm, w, h)
+                    
+                    ear_l = calculate_ear(landmarks["left_eye"])
+                    ear_r = calculate_ear(landmarks["right_eye"])
+                    avg_ear = (ear_l + ear_r) / 2.0
+                    
+                    yaw_ratio = calculate_yaw_ratio(landmarks["chin"], landmarks["nose_tip"])
+                    
+                    is_blink = avg_ear < 0.20
+                    is_head_turned = yaw_ratio < 0.6 or yaw_ratio > 1.6
+                    
+                    with self.lock:
+                        if is_blink:
+                            self.eyes_were_closed = True
+                        elif self.eyes_were_closed and avg_ear > 0.25:
+                            self.blink_count += 1
+                            self.eyes_were_closed = False
+                            
+                        if self.blink_count >= 1 or is_head_turned:
+                            self.is_live = True
+                            emb, err = extract_face_embedding(img)
+                            if emb is not None:
+                                self.face_embedding = emb
+                                self.snapshot = img.copy()
+                            
+                    with self.lock:
+                        msg = "Please Blink or Move Head"
+                        if self.blink_count >= 1 or is_head_turned:
+                            msg = "Liveness Verified!"
+                            color = (0, 255, 0)
+                        else:
+                            color = (0, 165, 255)
+                        cv2.putText(img, msg, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                        
+                        for pt in landmarks["left_eye"] + landmarks["right_eye"]:
+                            cv2.circle(img, pt, 2, (255, 255, 0), -1)
+
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 @st.cache_data(ttl=60)
 def _load_cached_embeddings():
@@ -1502,35 +1598,47 @@ else:
             
             if method == "Face Recognition":
                 st.subheader("👤 Secure Face Attendance Scanner")
-                if not FACE_RECOGNITION_AVAILABLE:
-                    st.warning("⚠️ Face recognition is not available. Please install 'mediapipe' library or use QR Code mode.")
+                if not FACE_RECOGNITION_AVAILABLE or not WEBRTC_AVAILABLE:
+                    st.warning("⚠️ Face recognition dependencies (mediapipe/streamlit-webrtc) are not fully installed. Please use QR Code mode.")
                 else:
                     st.markdown("""
                     <div class='section-note' style='border-left-color: #10b981; background: rgba(16, 185, 129, 0.05); margin-bottom: 15px; padding: 12px; border-radius: 8px;'>
-                        <strong>📸 Liveness Face Scan:</strong> To prevent spoofing, please take two photos: one with your eyes wide open, and one with your eyes fully closed. Your face will be matched against registered students.
+                        <strong>📸 Live Liveness Scan:</strong> To prevent spoofing, please blink your eyes or move your head left/right while looking at the camera. Once verified, click Mark Attendance.
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    st.info("Step 1: Take a photo with your eyes wide open.")
-                    eyes_open_photo = st.camera_input("📷 Eyes Open Photo:", key="face_scan_cam_open")
+                    rtc_config = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
                     
-                    if eyes_open_photo is not None:
-                        st.info("Step 2: Take a photo with your eyes fully closed.")
-                        eyes_closed_photo = st.camera_input("📷 Eyes Closed Photo:", key="face_scan_cam_closed")
-                        
-                        if eyes_closed_photo is not None:
-                            with st.spinner("🔍 Verifying liveness and identifying face..."):
-                                eyes_open_photo.seek(0)
-                                eyes_closed_photo.seek(0)
-                                is_live, live_msg = verify_liveness_from_snapshots(eyes_open_photo, eyes_closed_photo)
-                                
-                                if not is_live:
-                                    st.error(f"Liveness Check Failed: {live_msg}")
+                    webrtc_ctx = webrtc_streamer(
+                        key="liveness_scan",
+                        mode=WebRtcMode.SENDRECV,
+                        rtc_configuration=rtc_config,
+                        video_processor_factory=LivenessVideoProcessor,
+                        media_stream_constraints={"video": True, "audio": False},
+                        async_processing=True,
+                    )
+                    
+                    if webrtc_ctx.video_processor:
+                        if st.button("Mark Attendance", type="primary", use_container_width=True):
+                            with webrtc_ctx.video_processor.lock:
+                                is_live = webrtc_ctx.video_processor.is_live
+                                face_emb = webrtc_ctx.video_processor.face_embedding
+                            
+                            if is_live and face_emb is not None:
+                                known_encodings, known_rolls = _load_cached_embeddings()
+                                if not known_encodings:
+                                    st.error("No registered face encodings found in the database. Please enroll students first.")
                                 else:
-                                    eyes_open_photo.seek(0)
-                                    roll_number, err = verify_face_from_snapshot(eyes_open_photo)
+                                    best_score = -1.0
+                                    best_idx = -1
+                                    for i, known_enc in enumerate(known_encodings):
+                                        is_match, score = compare_face_embeddings(known_enc, face_emb, threshold=0.363)
+                                        if is_match and score > best_score:
+                                            best_score = score
+                                            best_idx = i
                                     
-                                    if roll_number:
+                                    if best_idx >= 0:
+                                        roll_number = known_rolls[best_idx]
                                         success, msg = mark_attendance(roll_number, lab_choice)
                                         if success:
                                             play_siri_voice(True, roll_number)
@@ -1539,9 +1647,10 @@ else:
                                         else:
                                             play_siri_voice(False, roll_number)
                                             show_scan_popup(False, msg, roll_number)
-                                        st.rerun()
-                                    elif err:
-                                        st.error(f"Face verification failed: {err}")
+                                    else:
+                                        st.error("Face did not match any registered student.")
+                            else:
+                                st.error("Liveness not yet verified. Please blink or move your head in front of the camera before clicking the button.")
                             
             else:
                 st.subheader("📷 QR Code Scanner")
