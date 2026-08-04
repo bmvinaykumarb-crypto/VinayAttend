@@ -6,4 +6,4 @@ Pillow
 qrcode
 streamlit-js-eval
 geopy
-mediapipestreamlit-webrtc
+mediapipe
