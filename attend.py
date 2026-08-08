@@ -890,20 +890,8 @@ def verify_liveness_from_snapshots(open_eyes_file, closed_eyes_file):
 
 
 def play_siri_voice(success, roll_number=""):
-    """Play siri voice note based on success/failure"""
-    try:
-        import platform
-        import os
-        system = platform.system()
-        if system == 'Darwin':  # macOS
-            roll_str = str(roll_number).replace('"', '').replace("'", "")
-            prefix = f"{roll_str}, " if roll_str else ""
-            if success:
-                os.system(f'say -v siri "{prefix}your attendance is successfully recorded." &')
-            else:
-                os.system(f'say -v siri "{prefix}failed to record attendance." ')
-    except Exception:
-        pass
+    """(Deprecated) Voice is now handled by client-side JS in render_popup"""
+    pass
 
 # Initialize session state for popup
 if 'show_popup' not in st.session_state:
@@ -914,10 +902,19 @@ if 'popup_data' not in st.session_state:
 def show_scan_popup(success, message, roll_number=""):
     """Display a popup after scanning"""
     st.session_state.show_popup = True
+    
+    roll_str = str(roll_number).replace('"', '').replace("'", "")
+    prefix = f"{roll_str}, " if roll_str else ""
+    if success:
+        voice_msg = f"{prefix}your attendance is successfully recorded."
+    else:
+        voice_msg = f"{prefix}failed to record attendance."
+        
     st.session_state.popup_data = {
         'success': success,
         'message': message,
-        'roll_number': roll_number
+        'roll_number': roll_number,
+        'voice_msg': voice_msg
     }
 
 def render_popup():
@@ -927,6 +924,20 @@ def render_popup():
         icon = "✅" if popup_data['success'] else "❌"
         status_class = "modal-success" if popup_data['success'] else "modal-error"
         heading = "Attendance Marked!" if popup_data['success'] else "Failed to Mark"
+        
+        voice_script = f"""
+            if ('speechSynthesis' in window) {{
+                window.speechSynthesis.cancel();
+                let msg = new SpeechSynthesisUtterance("{popup_data.get('voice_msg', '')}");
+                msg.lang = 'en-US';
+                let voices = window.speechSynthesis.getVoices();
+                let selectedVoice = voices.find(v => v.name.includes('Siri') || v.name.includes('Samantha') || v.name.includes('Google US English'));
+                if (selectedVoice) {{
+                    msg.voice = selectedVoice;
+                }}
+                window.speechSynthesis.speak(msg);
+            }}
+        """
         
         st.markdown(f"""
         <div class="modal-overlay">
@@ -940,6 +951,7 @@ def render_popup():
             </div>
         </div>
         <script>
+            {voice_script}
             setTimeout(() => {{
                 //Auto close popup after 3 seconds
                 let overlay = document.querySelector('.modal-overlay');
