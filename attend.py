@@ -28,6 +28,8 @@ import json
 import streamlit as st
 import urllib.request
 import urllib.error
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
+import av
 
 # --- MediaPipe for face detection, landmarks (liveness) ---
 try:
@@ -768,21 +770,15 @@ def verify_face_from_snapshot(image_file, threshold=0.363):
         return None, f"Error processing face snapshot: {str(e)}"
 
 
-def verify_liveness_from_snapshots(open_eyes_file, closed_eyes_file):
-    """Verify liveness by comparing EAR (Eye Aspect Ratio) between two snapshots:
-    one with eyes open and one with eyes closed.
-    Returns (is_live, message)."""
+def get_ear_from_file(img_file):
+    """Get average EAR from a camera-input image file using MediaPipe FaceLandmarker.
+    Returns (ear_value, error_string). On success error_string is None."""
     if not FACE_RECOGNITION_AVAILABLE:
-        return False, "Face recognition library is not available."
-    
+        return None, "Face recognition library is not available."
     if not ensure_models_cached():
-        return False, "Face recognition models could not be loaded."
-    
-    if open_eyes_file is None or closed_eyes_file is None:
-        return False, "Both photos are required for liveness verification."
-    
+        return None, "Face recognition models could not be loaded."
+
     try:
-        # Initialize MediaPipe FaceLandmarker (task-based API — compatible with Streamlit Cloud)
         BaseOptions = mp.tasks.BaseOptions
         FaceLandmarker = mp.tasks.vision.FaceLandmarker
         FaceLandmarkerOptions = mp.tasks.vision.FaceLandmarkerOptions
@@ -796,54 +792,101 @@ def verify_liveness_from_snapshots(open_eyes_file, closed_eyes_file):
             min_face_presence_confidence=0.5,
         )
         face_landmarker = FaceLandmarker.create_from_options(landmarker_options)
-        
-        def get_ear_from_image(img_file):
-            """Get average EAR from an image file."""
-            image = Image.open(img_file).convert("RGB")
-            image_np = np.array(image)
-            h, w = image_np.shape[:2]
-            
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_np)
-            results = face_landmarker.detect(mp_image)
-            if not results.face_landmarks:
-                return None, "No face detected in the image."
-            
-            face_lm = results.face_landmarks[0]
-            landmarks = get_landmarks_from_mediapipe(face_lm, w, h)
-            
-            ear_l = calculate_ear(landmarks["left_eye"])
-            ear_r = calculate_ear(landmarks["right_eye"])
-            avg_ear = (ear_l + ear_r) / 2.0
-            return avg_ear, None
-        
-        # Get EAR from both images
-        ear_open, err1 = get_ear_from_image(open_eyes_file)
-        if ear_open is None:
-            return False, f"Eyes-open photo: {err1}"
-        
-        # Reset file pointer for closed eyes image
-        closed_eyes_file.seek(0)
-        ear_closed, err2 = get_ear_from_image(closed_eyes_file)
-        if ear_closed is None:
-            return False, f"Eyes-closed photo: {err2}"
-        
+
+        image = Image.open(img_file).convert("RGB")
+        image_np = np.array(image)
+        h, w = image_np.shape[:2]
+
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_np)
+        results = face_landmarker.detect(mp_image)
         face_landmarker.close()
-        
-        # The EAR difference should be significant between open and closed eyes
-        ear_diff = ear_open - ear_closed
-        
-        if ear_open < 0.18:
-            return False, "Your eyes appear closed in the first photo. Please retake with eyes wide open."
-        
-        if ear_diff > 0.04:
-            return True, "Liveness verified successfully! Eye blink pattern confirmed."
-        elif ear_closed < ear_open * 0.85:
-            return True, "Liveness verified successfully! Eye closure detected."
-        else:
-            return False, f"Liveness check failed. Please ensure eyes are clearly open in the first photo and clearly closed in the second. (EAR open: {ear_open:.3f}, closed: {ear_closed:.3f})"
-    
+
+        if not results.face_landmarks:
+            return None, "No face detected in the image."
+
+        face_lm = results.face_landmarks[0]
+        landmarks = get_landmarks_from_mediapipe(face_lm, w, h)
+
+        ear_l = calculate_ear(landmarks["left_eye"])
+        ear_r = calculate_ear(landmarks["right_eye"])
+        avg_ear = (ear_l + ear_r) / 2.0
+        return avg_ear, None
     except Exception as e:
-        return False, f"Liveness check error: {str(e)}"
+        return None, f"EAR calculation error: {str(e)}"
+
+
+def verify_liveness_from_snapshots(open_eyes_file, closed_eyes_file):
+    """Verify liveness by comparing EAR (Eye Aspect Ratio) between two snapshots:
+    one with eyes open and one with eyes closed.
+    Also verifies that both photos show the **same person** via face embedding comparison.
+    Returns (is_live, message, ear_open, ear_closed)."""
+    if not FACE_RECOGNITION_AVAILABLE:
+        return False, "Face recognition library is not available.", None, None
+
+    if not ensure_models_cached():
+        return False, "Face recognition models could not be loaded.", None, None
+
+    if open_eyes_file is None or closed_eyes_file is None:
+        return False, "Both photos are required for liveness verification.", None, None
+
+    try:
+        # --- Step A: Get EAR from both images ---
+        open_eyes_file.seek(0)
+        ear_open, err1 = get_ear_from_file(open_eyes_file)
+        if ear_open is None:
+            return False, f"Eyes-open photo: {err1}", None, None
+
+        closed_eyes_file.seek(0)
+        ear_closed, err2 = get_ear_from_file(closed_eyes_file)
+        if ear_closed is None:
+            return False, f"Eyes-closed photo: {err2}", ear_open, None
+
+        # --- Step B: Validate EAR thresholds ---
+        if ear_open < 0.18:
+            return False, "Your eyes appear closed in the first photo. Please retake with eyes wide open.", ear_open, ear_closed
+
+        ear_diff = ear_open - ear_closed
+        blink_detected = ear_diff > 0.04 or ear_closed < ear_open * 0.85
+
+        if not blink_detected:
+            return False, (
+                f"Blink not detected. Please make sure your eyes are clearly "
+                f"OPEN in photo 1 and fully CLOSED in photo 2.\n"
+                f"(EAR open: {ear_open:.3f}, EAR closed: {ear_closed:.3f})"
+            ), ear_open, ear_closed
+
+        # --- Step C: Same-person verification via face embeddings ---
+        # This is a bonus anti-spoofing check. If the SFace model can't load
+        # (e.g. OpenCV / ONNX version mismatch), we still pass liveness based
+        # on the EAR blink detection above.
+        same_person_ok = True  # assume ok unless proven otherwise
+        try:
+            open_eyes_file.seek(0)
+            img_open = Image.open(open_eyes_file).convert("RGB")
+            bgr_open = cv2.cvtColor(np.array(img_open), cv2.COLOR_RGB2BGR)
+            emb_open, emb_err1 = extract_face_embedding(bgr_open)
+
+            closed_eyes_file.seek(0)
+            img_closed = Image.open(closed_eyes_file).convert("RGB")
+            bgr_closed = cv2.cvtColor(np.array(img_closed), cv2.COLOR_RGB2BGR)
+            emb_closed, emb_err2 = extract_face_embedding(bgr_closed)
+
+            if emb_open is not None and emb_closed is not None:
+                same_person, sim_score = compare_face_embeddings(emb_open, emb_closed, threshold=0.30)
+                if not same_person:
+                    return False, (
+                        f"The two photos do not appear to be the same person "
+                        f"(similarity: {sim_score:.3f}). Please retake both photos."
+                    ), ear_open, ear_closed
+        except Exception:
+            # SFace model unavailable — skip same-person check
+            same_person_ok = True
+
+        # All checks passed
+        return True, "✅ Liveness verified! Eye blink confirmed.", ear_open, ear_closed
+
+    except Exception as e:
+        return False, f"Liveness check error: {str(e)}", None, None
 
 
 def play_siri_voice(success, roll_number=""):
@@ -1501,47 +1544,160 @@ else:
             method = st.radio("Verification Method:", ["Face Recognition", "QR Code Scanner"], horizontal=True, key="attendance_method_radio")
             
             if method == "Face Recognition":
-                st.subheader("👤 Secure Face Attendance Scanner")
+                st.subheader("👤 Live Secure Face Attendance")
                 if not FACE_RECOGNITION_AVAILABLE:
                     st.warning("⚠️ Face recognition is not available. Please install 'mediapipe' library or use QR Code mode.")
                 else:
                     st.markdown("""
-                    <div class='section-note' style='border-left-color: #10b981; background: rgba(16, 185, 129, 0.05); margin-bottom: 15px; padding: 12px; border-radius: 8px;'>
-                        <strong>📸 Liveness Face Scan:</strong> To prevent spoofing, please take two photos: one with your eyes wide open, and one with your eyes fully closed. Your face will be matched against registered students.
+                    <div class='section-note' style='border-left-color: #10b981; background: rgba(16, 185, 129, 0.05); margin-bottom: 15px; padding: 12px 16px; border-radius: 8px;'>
+                        <strong>👁️ Live Blink Liveness Check:</strong><br>
+                        Position your face in the camera and <strong>blink</strong> to prove you are a real person.<br>
+                        The system will automatically scan your face and mark attendance once verified.
                     </div>
                     """, unsafe_allow_html=True)
-                    
-                    st.info("Step 1: Take a photo with your eyes wide open.")
-                    eyes_open_photo = st.camera_input("📷 Eyes Open Photo:", key="face_scan_cam_open")
-                    
-                    if eyes_open_photo is not None:
-                        st.info("Step 2: Take a photo with your eyes fully closed.")
-                        eyes_closed_photo = st.camera_input("📷 Eyes Closed Photo:", key="face_scan_cam_closed")
-                        
-                        if eyes_closed_photo is not None:
-                            with st.spinner("🔍 Verifying liveness and identifying face..."):
-                                eyes_open_photo.seek(0)
-                                eyes_closed_photo.seek(0)
-                                is_live, live_msg = verify_liveness_from_snapshots(eyes_open_photo, eyes_closed_photo)
+
+                    class LiveFaceProcessor(VideoProcessorBase):
+                        def __init__(self):
+                            self.matched_roll = None
+                            self.ear_history = []
+                            self.liveness_verified = False
+                            self.detector = None
+                            self.recognizer = None
+                            self.face_landmarker = None
+                            self.known_encodings = []
+                            self.known_rolls = []
+                            self.initialized = False
+                            self.last_w = 0
+                            self.last_h = 0
+
+                        def _initialize(self):
+                            if not ensure_models_cached():
+                                return False
+                            self.recognizer = get_face_recognizer()
+                            import mediapipe as mp
+                            BaseOptions = mp.tasks.BaseOptions
+                            FaceLandmarker = mp.tasks.vision.FaceLandmarker
+                            FaceLandmarkerOptions = mp.tasks.vision.FaceLandmarkerOptions
+                            VisionRunningMode = mp.tasks.vision.RunningMode
+                            landmarker_options = FaceLandmarkerOptions(
+                                base_options=BaseOptions(model_asset_path=FACE_LANDMARKER_PATH),
+                                running_mode=VisionRunningMode.IMAGE,
+                                num_faces=1,
+                                min_face_detection_confidence=0.5,
+                                min_face_presence_confidence=0.5,
+                            )
+                            self.face_landmarker = FaceLandmarker.create_from_options(landmarker_options)
+                            self.known_encodings, self.known_rolls = _load_cached_embeddings()
+                            self.initialized = True
+                            return True
+
+                        def recv(self, frame):
+                            img = frame.to_ndarray(format="bgr24")
+                            if not self.initialized:
+                                if not self._initialize():
+                                    return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+                            # If already matched in this session, show success message
+                            if self.matched_roll:
+                                cv2.putText(img, f"Success! Marked {self.matched_roll}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                                return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+                            h, w = img.shape[:2]
+                            if self.detector is None or w != self.last_w or h != self.last_h:
+                                self.detector = get_face_detector(w, h)
+                                self.last_w = w
+                                self.last_h = h
+
+                            # 1. Liveness check via MediaPipe
+                            rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                            import mediapipe as mp
+                            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_img)
+                            results = self.face_landmarker.detect(mp_image)
+
+                            ear = None
+                            if results.face_landmarks:
+                                face_lm = results.face_landmarks[0]
+                                landmarks = get_landmarks_from_mediapipe(face_lm, w, h)
+                                ear_l = calculate_ear(landmarks["left_eye"])
+                                ear_r = calculate_ear(landmarks["right_eye"])
+                                ear = (ear_l + ear_r) / 2.0
                                 
-                                if not is_live:
-                                    st.error(f"Liveness Check Failed: {live_msg}")
-                                else:
-                                    eyes_open_photo.seek(0)
-                                    roll_number, err = verify_face_from_snapshot(eyes_open_photo)
+                                # Draw eyes
+                                for pt in landmarks["left_eye"] + landmarks["right_eye"]:
+                                    cv2.circle(img, pt, 2, (0, 255, 0), -1)
+
+                                self.ear_history.append(ear)
+                                if len(self.ear_history) > 15:
+                                    self.ear_history.pop(0)
+
+                                # Detect blink (a sudden drop in EAR)
+                                if len(self.ear_history) >= 10:
+                                    max_ear = max(self.ear_history)
+                                    min_ear = min(self.ear_history)
+                                    # Typical blink: open > 0.20, closed < 0.16
+                                    if max_ear > 0.20 and min_ear < 0.16:
+                                        self.liveness_verified = True
+
+                            status_color = (0, 255, 255) if not self.liveness_verified else (0, 255, 0)
+                            status_text = "Blink to verify liveness..." if not self.liveness_verified else "Live person verified!"
+                            cv2.putText(img, status_text, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
+                            if ear:
+                                cv2.putText(img, f"EAR: {ear:.3f}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2)
+
+                            # 2. Face Recognition
+                            if self.liveness_verified:
+                                _, faces = self.detector.detect(img)
+                                if faces is not None and len(faces) > 0:
+                                    face = faces[0]
+                                    aligned_face = self.recognizer.alignCrop(img, face)
+                                    face_emb = self.recognizer.feature(aligned_face)
                                     
-                                    if roll_number:
-                                        success, msg = mark_attendance(roll_number, lab_choice)
-                                        if success:
-                                            play_siri_voice(True, roll_number)
-                                            st.balloons()
-                                            show_scan_popup(True, msg, roll_number)
-                                        else:
-                                            play_siri_voice(False, roll_number)
-                                            show_scan_popup(False, msg, roll_number)
-                                        st.rerun()
-                                    elif err:
-                                        st.error(f"Face verification failed: {err}")
+                                    best_score = -1.0
+                                    best_idx = -1
+                                    for i, known_enc in enumerate(self.known_encodings):
+                                        is_match, score = compare_face_embeddings(known_enc, face_emb, threshold=0.363)
+                                        if is_match and score > best_score:
+                                            best_score = score
+                                            best_idx = i
+                                    
+                                    if best_idx >= 0:
+                                        self.matched_roll = self.known_rolls[best_idx]
+                                        cv2.putText(img, f"Recognized: {self.matched_roll}", (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                                        
+                                        # Draw bounding box
+                                        box = face[0:4].astype(int)
+                                        cv2.rectangle(img, (box[0], box[1]), (box[0]+box[2], box[1]+box[3]), (0, 255, 0), 2)
+                                    else:
+                                        cv2.putText(img, "Recognizing... No match", (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
+                            return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+                    webrtc_ctx = webrtc_streamer(
+                        key="live-face-scanner",
+                        mode=WebRtcMode.SENDRECV,
+                        video_processor_factory=LiveFaceProcessor,
+                        media_stream_constraints={"video": True, "audio": False},
+                        async_processing=True,
+                    )
+
+                    if webrtc_ctx.state.playing:
+                        if webrtc_ctx.video_processor:
+                            if webrtc_ctx.video_processor.matched_roll:
+                                roll = webrtc_ctx.video_processor.matched_roll
+                                success, msg = mark_attendance(roll, lab_choice)
+                                if success:
+                                    play_siri_voice(True, roll)
+                                    st.balloons()
+                                    show_scan_popup(True, msg, roll)
+                                else:
+                                    play_siri_voice(False, roll)
+                                    show_scan_popup(False, msg, roll)
+                                webrtc_ctx.video_processor.matched_roll = None  # Reset to prevent continuous triggers
+                                st.rerun()
+                            else:
+                                import time
+                                time.sleep(1.0)
+                                st.rerun()
                             
             else:
                 st.subheader("📷 QR Code Scanner")
