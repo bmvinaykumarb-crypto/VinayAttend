@@ -408,7 +408,6 @@ def mark_attendance(roll_number, lab):
     if not df[(df["Roll Number"] == roll_number) & (df["Date"] == current_date) & (df["Lab"] == lab)].empty:
         return False, f"Attendance already marked for {roll_number} in {lab} today."
     
-    # Get existing attendances for today
     existing_today = df[(df["Roll Number"] == roll_number) & (df["Date"] == current_date)]
     existing_count = len(existing_today)
     
@@ -459,6 +458,110 @@ def load_faculties_registry():
         if col not in df.columns:
             df[col] = ""
     return df
+
+
+def get_daily_subject_matrix(selected_date_str, filter_lab="All"):
+    """
+    Constructs a daily subject-wise attendance matrix for a given date.
+    Returns: (matrix_df, metrics_dict)
+    """
+    att_df = load_data()
+    reg_df = load_student_registry()
+    
+    if att_df.empty:
+        return pd.DataFrame(), {
+            "total_students_present": 0,
+            "total_records": 0,
+            "subjects_conducted": [],
+            "reg_students_count": len(reg_df) if not reg_df.empty else 0
+        }
+        
+    day_att = att_df[att_df["Date"] == selected_date_str].copy()
+    if day_att.empty:
+        return pd.DataFrame(), {
+            "total_students_present": 0,
+            "total_records": 0,
+            "subjects_conducted": [],
+            "reg_students_count": len(reg_df) if not reg_df.empty else 0
+        }
+
+    if filter_lab != "All":
+        day_att = day_att[day_att["Lab"] == filter_lab]
+
+    subjects_conducted = sorted(day_att["Lab"].dropna().unique().tolist())
+    
+    registered_rolls = reg_df["Roll Number"].astype(str).str.strip().tolist() if not reg_df.empty else []
+    today_rolls = day_att["Roll Number"].astype(str).str.strip().unique().tolist()
+    all_rolls = sorted(list(set(registered_rolls + today_rolls)))
+    
+    matrix_rows = []
+    for roll in all_rolls:
+        row_dict = {"Roll Number": roll}
+        subjects_attended_count = 0
+        
+        for subj in subjects_conducted:
+            match = day_att[(day_att["Roll Number"].astype(str).str.strip() == roll) & (day_att["Lab"] == subj)]
+            if not match.empty:
+                time_str = match.iloc[0]["Time"]
+                row_dict[subj] = f"✅ Present ({time_str})"
+                subjects_attended_count += 1
+            else:
+                if roll in registered_rolls:
+                    row_dict[subj] = "❌ Absent"
+                else:
+                    row_dict[subj] = "— Not Enrolled"
+                    
+        row_dict["Attended / Conducted"] = f"{subjects_attended_count} / {len(subjects_conducted)}"
+        row_dict["Daily Attendance Rate"] = f"{(subjects_attended_count / len(subjects_conducted) * 100):.1f}%" if len(subjects_conducted) > 0 else "0%"
+        matrix_rows.append(row_dict)
+        
+    matrix_df = pd.DataFrame(matrix_rows)
+    
+    metrics = {
+        "total_students_present": len(today_rolls),
+        "total_records": len(day_att),
+        "subjects_conducted": subjects_conducted,
+        "reg_students_count": len(all_rolls)
+    }
+    
+    return matrix_df, metrics
+
+
+def get_student_daily_records(roll_number):
+    """
+    Returns daily subject-wise records and statistics for a specific student.
+    """
+    att_df = load_data()
+    if att_df.empty or not roll_number:
+        return pd.DataFrame(), pd.DataFrame()
+        
+    student_att = att_df[att_df["Roll Number"].astype(str).str.strip().str.upper() == str(roll_number).strip().upper()].copy()
+    if student_att.empty:
+        return pd.DataFrame(), pd.DataFrame()
+        
+    student_att["Date_Obj"] = pd.to_datetime(student_att["Date"])
+    student_att["Day_Name"] = student_att["Date_Obj"].dt.strftime("%A")
+    student_att = student_att.sort_values(by=["Date", "Time"], ascending=[False, False])
+    
+    daily_log = student_att[["Date", "Day_Name", "Lab", "Time"]].rename(columns={
+        "Day_Name": "Day of Week",
+        "Lab": "Subject",
+        "Time": "Time Marked"
+    })
+    
+    subj_summary = student_att.groupby("Lab").agg(
+        Sessions_Attended=("Date", "count"),
+        First_Attended=("Date", "min"),
+        Latest_Attended=("Date", "max")
+    ).reset_index().rename(columns={
+        "Lab": "Subject",
+        "Sessions_Attended": "Total Sessions Attended",
+        "First_Attended": "First Recorded Date",
+        "Latest_Attended": "Most Recent Date"
+    })
+    
+    return daily_log, subj_summary
+
 
 
 def serialize_face_encoding(encoding):
@@ -1094,9 +1197,9 @@ else:
     if st.session_state.user_role == "admin":
         tab_list = ["👨‍🏫 Manage Faculty", "📥 Download Attendance", "📊 Attendance Analytics", "🗑️ Manage Records"]
     elif st.session_state.user_role == "student":
-        tab_list = ["👤 Face & QR Attendance", "👤 Register My Face", "📇 My QR Code"]
+        tab_list = ["👤 Face & QR Attendance", "📅 My Daily Attendance", "👤 Register My Face", "📇 My QR Code"]
     else:
-        tab_list = ["👤 Face & QR Attendance", "📊 View Records", "🧑‍🎓 Manage Students & Faces", "📥 Download Student Record"]
+        tab_list = ["👤 Face & QR Attendance", "📊 Daily & Subject-Wise Records", "🧑‍🎓 Manage Students & Faces", "📥 Download Student Record"]
         
     tabs = st.tabs(tab_list)
     
