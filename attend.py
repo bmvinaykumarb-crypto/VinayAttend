@@ -413,7 +413,7 @@ def mark_attendance(roll_number, lab):
     existing_count = len(existing_today)
     
     # On Fridays (4) and Saturdays (5), allow up to 2 attendances, otherwise only 1
-    if day_of_week in [4, 6]:  # Friday or Saturday
+    if day_of_week in [4, 7]:  # Friday or Saturday
         max_attendances = 2
     else:
         max_attendances = 1
