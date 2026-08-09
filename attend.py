@@ -283,14 +283,37 @@ if not st.session_state.logged_in:
             elif student_pw_input != "student123":
                 st.error("❌ Incorrect password.")
             else:
-                st.session_state.logged_in = True
-                st.session_state.user_role = "student"
-                st.session_state.username = roll_clean
-                st.session_state.student_roll = roll_clean
-                st.session_state.location_verified = False
-                st.success(f"✅ Welcome, Student {roll_clean}!")
-                time.sleep(0.5)
-                st.rerun()
+                # Check if faculty has registered this student's face (inline DB check)
+                face_registered = False
+                try:
+                    _conn = sqlite3.connect("attendance.db")
+                    _cur = _conn.cursor()
+                    _cur.execute(
+                        "SELECT face_encoding, face_path FROM students WHERE roll_number = ?",
+                        (roll_clean,)
+                    )
+                    _row = _cur.fetchone()
+                    _conn.close()
+                    if _row and _row[0] is not None:
+                        face_registered = True
+                except Exception:
+                    face_registered = False
+
+                if not face_registered:
+                    st.error(
+                        f"❌ **Login Denied** — Roll Number `{roll_clean}` does not have a registered face.\n\n"
+                        "Your face must be registered by the **Faculty** before you can log in. "
+                        "Please contact your faculty to register your face first."
+                    )
+                else:
+                    st.session_state.logged_in = True
+                    st.session_state.user_role = "student"
+                    st.session_state.username = roll_clean
+                    st.session_state.student_roll = roll_clean
+                    st.session_state.location_verified = False
+                    st.success(f"✅ Welcome, Student {roll_clean}!")
+                    time.sleep(0.5)
+                    st.rerun()
 
         st.caption("🔑 Common student password: **student123**")
 
