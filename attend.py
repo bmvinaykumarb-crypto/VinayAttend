@@ -187,13 +187,187 @@ def load_static_file(filename: str) -> str:
         return path.read_text(encoding="utf-8")
     return ""
 
-st.subheader("📍 Location Verification")
+# Load CSS immediately so login page looks styled
+css = load_static_file("style.css")
+if css:
+    st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
 
+# Initialize ALL session state variables upfront
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+if 'user_role' not in st.session_state:
+    st.session_state.user_role = ""
+if 'username' not in st.session_state:
+    st.session_state.username = ""
+if 'student_roll' not in st.session_state:
+    st.session_state.student_roll = ""
+if 'show_student_login' not in st.session_state:
+    st.session_state.show_student_login = False
+if 'redirecting' not in st.session_state:
+    st.session_state.redirecting = False
+if 'target_role' not in st.session_state:
+    st.session_state.target_role = None
+if 'auto_scan_active' not in st.session_state:
+    st.session_state.auto_scan_active = False
+if 'show_faculty_login' not in st.session_state:
+    st.session_state.show_faculty_login = False
+if 'show_admin_login' not in st.session_state:
+    st.session_state.show_admin_login = False
 if 'location_verified' not in st.session_state:
     st.session_state.location_verified = False
     st.session_state.location_distance = None
+if 'login_tab' not in st.session_state:
+    st.session_state.login_tab = "student"
+
+import sqlite3
+
+DB_FILE = "attendance.db"
+CSV_FILE = "lab_attendance.csv"
+STUDENT_REGISTRY_FILE = "student_registry.csv"
+FACULTIES_REGISTRY_FILE = "faculties_registry.csv"
+REGISTERED_FACES_DIR = "registered_faces"
+
+
+# ================================================================
+#  STEP 1: LOGIN GATE — Page is BLANK until user logs in
+# ================================================================
+
+if not st.session_state.logged_in:
+    # Full-page login screen
+    st.markdown("""
+    <div style="text-align: center; padding-top: 30px;">
+        <div style="font-size: 4rem; margin-bottom: 8px;">📝</div>
+        <h1 style="font-size: 2rem; margin: 0;">Smart Lab Attendance</h1>
+        <p style="color: var(--text-secondary); font-size: 1rem; margin-top: 6px;">Sign in to access the attendance system</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.divider()
+
+    # Login type selection
+    login_cols = st.columns(3)
+    with login_cols[0]:
+        if st.button("🎓 Student Login", use_container_width=True, type="primary" if st.session_state.login_tab == "student" else "secondary", key="tab_student_login"):
+            st.session_state.login_tab = "student"
+            st.rerun()
+    with login_cols[1]:
+        if st.button("🔐 Faculty Login", use_container_width=True, type="primary" if st.session_state.login_tab == "faculty" else "secondary", key="tab_faculty_login"):
+            st.session_state.login_tab = "faculty"
+            st.rerun()
+    with login_cols[2]:
+        if st.button("👑 Admin Login", use_container_width=True, type="primary" if st.session_state.login_tab == "admin" else "secondary", key="tab_admin_login"):
+            st.session_state.login_tab = "admin"
+            st.rerun()
+
+    st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
+
+    # --- STUDENT LOGIN ---
+    if st.session_state.login_tab == "student":
+        st.markdown("""
+        <div class="hero" style="border-left: 4px solid #60a5fa;">
+            <h2>🎓 Student Sign In</h2>
+            <p>Enter your Roll Number and the common student password to access attendance features.</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        s_col1, s_col2 = st.columns(2)
+        with s_col1:
+            student_roll_input = st.text_input("Roll Number", placeholder="e.g. 220301, U16VH24S0208", key="login_student_roll")
+        with s_col2:
+            student_pw_input = st.text_input("Password", type="password", placeholder="••••••••", key="login_student_pw")
+
+        if st.button("🚀 Sign In as Student", type="primary", use_container_width=True, key="login_student_btn"):
+            roll_clean = student_roll_input.strip()
+            if not roll_clean:
+                st.error("Please enter your Roll Number.")
+            elif student_pw_input != "student123":
+                st.error("❌ Incorrect password.")
+            else:
+                st.session_state.logged_in = True
+                st.session_state.user_role = "student"
+                st.session_state.username = roll_clean
+                st.session_state.student_roll = roll_clean
+                st.session_state.location_verified = False
+                st.success(f"✅ Welcome, Student {roll_clean}!")
+                time.sleep(0.5)
+                st.rerun()
+
+        st.caption("🔑 Common student password: **student123**")
+
+    # --- FACULTY LOGIN ---
+    elif st.session_state.login_tab == "faculty":
+        st.markdown("""
+        <div class="hero" style="border-left: 4px solid #a78bfa;">
+            <h2>🔐 Faculty Sign In</h2>
+            <p>Enter your faculty email and password to manage attendance records.</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        f_col1, f_col2 = st.columns(2)
+        with f_col1:
+            faculty_email_input = st.text_input("Faculty Email", placeholder="professor@college.edu", key="login_faculty_email")
+        with f_col2:
+            faculty_pw_input = st.text_input("Password", type="password", placeholder="••••••••", key="login_faculty_pw")
+
+        if st.button("🔐 Sign In as Faculty", type="primary", use_container_width=True, key="login_faculty_btn"):
+            if not faculty_email_input.strip():
+                st.error("Please enter a valid Email.")
+            elif faculty_pw_input != "faculty123":
+                st.error("❌ Incorrect password.")
+            else:
+                st.session_state.logged_in = True
+                st.session_state.user_role = "faculty"
+                st.session_state.username = faculty_email_input.strip()
+                st.session_state.location_verified = False
+                st.success(f"✅ Welcome, Faculty!")
+                time.sleep(0.5)
+                st.rerun()
+
+        st.caption("🔑 Faculty password: **faculty123**")
+
+    # --- ADMIN LOGIN ---
+    elif st.session_state.login_tab == "admin":
+        st.markdown("""
+        <div class="hero" style="border-left: 4px solid #f59e0b;">
+            <h2>👑 Admin Sign In</h2>
+            <p>Enter admin credentials to manage faculty, students, and system settings.</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        a_col1, a_col2 = st.columns(2)
+        with a_col1:
+            admin_id_input = st.text_input("Admin ID", placeholder="admin", key="login_admin_id")
+        with a_col2:
+            admin_pw_input = st.text_input("Password", type="password", placeholder="••••••••", key="login_admin_pw")
+
+        if st.button("👑 Sign In as Admin", type="primary", use_container_width=True, key="login_admin_btn"):
+            if not admin_id_input.strip():
+                st.error("Please enter Admin ID.")
+            elif admin_pw_input != "admin123":
+                st.error("❌ Incorrect password.")
+            else:
+                st.session_state.logged_in = True
+                st.session_state.user_role = "admin"
+                st.session_state.username = admin_id_input.strip()
+                st.session_state.location_verified = False
+                st.success(f"✅ Welcome, Admin!")
+                time.sleep(0.5)
+                st.rerun()
+
+        st.caption("🔑 Admin password: **admin123**")
+
+    # Block everything after login gate
+    st.stop()
+
+
+# ================================================================
+#  STEP 2: LOCATION VERIFICATION — runs AFTER login
+# ================================================================
 
 if not st.session_state.location_verified:
+    st.subheader("📍 Location Verification")
+    st.markdown(f"<p style='color: var(--text-secondary);'>Signed in as <strong>{st.session_state.user_role.title()}: {st.session_state.username}</strong> — verifying your location...</p>", unsafe_allow_html=True)
+
     js_code = """
     new Promise((resolve, reject) => {
         if (navigator.geolocation) {
@@ -251,38 +425,14 @@ if not st.session_state.location_verified:
             st.session_state.location_verified = True
             st.session_state.location_distance = distance
             st.success(f"✅ Location verified ({distance:.0f}m from college)")
-else:
+            st.rerun()
+
+# ================================================================
+#  STEP 3: MAIN DASHBOARD — only reached after login + location
+# ================================================================
+
+if st.session_state.location_distance is not None:
     st.success(f"✅ Location verified ({st.session_state.location_distance:.0f}m from college)")
-
-css = load_static_file("style.css")
-if css:
-    st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
-
-# Initialize session state for user login & redirects
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = True  # Direct access for students
-if 'user_role' not in st.session_state:
-    st.session_state.user_role = "student"  # Default to student
-if 'username' not in st.session_state:
-    st.session_state.username = "Student"
-if 'redirecting' not in st.session_state:
-    st.session_state.redirecting = False
-if 'target_role' not in st.session_state:
-    st.session_state.target_role = None
-if 'auto_scan_active' not in st.session_state:
-    st.session_state.auto_scan_active = False
-if 'show_faculty_login' not in st.session_state:
-    st.session_state.show_faculty_login = False
-if 'show_admin_login' not in st.session_state:
-    st.session_state.show_admin_login = False
-
-import sqlite3
-
-DB_FILE = "attendance.db"
-CSV_FILE = "lab_attendance.csv"
-STUDENT_REGISTRY_FILE = "student_registry.csv"
-FACULTIES_REGISTRY_FILE = "faculties_registry.csv"
-REGISTERED_FACES_DIR = "registered_faces"
 
 def get_db_connection():
     conn = sqlite3.connect(DB_FILE)
@@ -670,34 +820,72 @@ def _load_cached_embeddings():
     return known_encodings, known_rolls
 
 
-def match_face(face_image_file, threshold=0.363):
+def get_student_face_details(roll_number):
+    """
+    Fetch student registration record, face image path, and face encoding from SQLite database.
+    """
+    if not roll_number:
+        return None
+    roll_str = str(roll_number).strip()
+    df = load_student_registry()
+    if df.empty:
+        return None
+    matches = df[df["Roll Number"].astype(str).str.strip().str.upper() == roll_str.upper()]
+    if matches.empty:
+        return None
+    row = matches.iloc[0]
+    enc_str = str(row.get("Face Encoding", ""))
+    face_path = str(row.get("Face Path", ""))
+    
+    if not face_path or not os.path.exists(face_path):
+        candidate_path = os.path.join(REGISTERED_FACES_DIR, f"{roll_str}.jpg")
+        if os.path.exists(candidate_path):
+            face_path = candidate_path
+
+    encoding = deserialize_face_encoding(enc_str) if enc_str else None
+
+    return {
+        "roll_number": str(row["Roll Number"]),
+        "registration_date": str(row.get("Registration Date", "")),
+        "face_encoding": encoding,
+        "face_path": face_path if (face_path and os.path.exists(face_path)) else None,
+        "has_face": encoding is not None
+    }
+
+
+def match_face(face_image_file, threshold=0.363, target_roll_number=None):
     """
     Given an uploaded or captured image file, detect the face,
     compare it against the registered face encodings in the database,
     and return the matched roll number, or None if no match.
-    Uses OpenCV SFace for face embedding/matching.
+    If target_roll_number is specified, performs fast 1-to-1 face verification against ONLY that student.
     """
     if not FACE_RECOGNITION_AVAILABLE:
         return None, "Face recognition library is not available."
     
     try:
-        # Load image with PIL and convert to BGR numpy array (OpenCV format)
         image = Image.open(face_image_file).convert("RGB")
         image_np = np.array(image)
         image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
         
-        # Extract face embedding using YuNet + SFace
         unknown_embedding, err = extract_face_embedding(image_bgr)
         if unknown_embedding is None:
             return None, err
         
-        # Load cached embeddings (avoids DB + JSON parse on every scan)
+        if target_roll_number:
+            details = get_student_face_details(target_roll_number)
+            if not details or not details["has_face"]:
+                return None, f"No registered face photo found for Roll Number '{target_roll_number}'. Please upload your face picture under 'Register My Face' tab first."
+            is_match, score = compare_face_embeddings(details["face_encoding"], unknown_embedding, threshold=threshold)
+            if is_match:
+                return str(target_roll_number), None
+            return None, f"Face verification failed: Captured face does not match the registered face photo for Roll Number '{target_roll_number}' (Similarity score: {score:.3f})."
+
         known_encodings, known_rolls = _load_cached_embeddings()
 
         if not known_rolls:
             return None, "No registered face encodings found in the database. Please enroll students first."
             
-        # Compare faces using numpy cosine similarity (fast, no model reload)
         best_score = -1.0
         best_idx = -1
         for i, known_enc in enumerate(known_encodings):
@@ -826,9 +1014,9 @@ def scan_qr_from_image(image_file):
         return None, f"Error scanning QR Code: {str(e)}"
 
 
-def verify_face_from_snapshot(image_file, threshold=0.363):
+def verify_face_from_snapshot(image_file, threshold=0.363, target_roll_number=None):
     """Verify a face from a camera snapshot (st.camera_input) against registered students.
-    Uses the browser's default camera via st.camera_input (works on Streamlit Cloud, desktop, and mobile).
+    If target_roll_number is provided, performs fast 1-to-1 matching against ONLY that student.
     Returns (roll_number, error_string). On success error_string is None."""
     if not FACE_RECOGNITION_AVAILABLE:
         return None, "Face recognition library is not available."
@@ -838,12 +1026,6 @@ def verify_face_from_snapshot(image_file, threshold=0.363):
     
     if image_file is None:
         return None, "No image captured. Please take a photo."
-
-    # Use cached embeddings (avoids re-loading DB + JSON parse)
-    known_encodings, known_rolls = _load_cached_embeddings()
-
-    if not known_encodings:
-        return None, "No registered face encodings found. Please enroll students first."
 
     try:
         # Load image from the camera_input file
@@ -855,8 +1037,26 @@ def verify_face_from_snapshot(image_file, threshold=0.363):
         face_emb, err = extract_face_embedding(image_bgr)
         if face_emb is None:
             return None, err
-        
-        # Compare against all registered faces (numpy cosine — fast)
+
+        if target_roll_number:
+            # 1-to-1 targeted face verification (ultra fast!)
+            details = get_student_face_details(target_roll_number)
+            if not details or not details["has_face"]:
+                return None, f"No registered face photo found for Roll Number '{target_roll_number}'. Please upload your face picture under 'Register My Face' tab first."
+            
+            target_enc = details["face_encoding"]
+            is_match, score = compare_face_embeddings(target_enc, face_emb, threshold=threshold)
+            if is_match:
+                return str(target_roll_number), None
+            else:
+                return None, f"Face verification failed: Captured face does not match the registered face photo for Student Roll Number '{target_roll_number}' (Similarity score: {score:.3f})."
+
+        # Use cached embeddings for 1-to-N fallback loop
+        known_encodings, known_rolls = _load_cached_embeddings()
+
+        if not known_encodings:
+            return None, "No registered face encodings found. Please enroll students first."
+
         best_score = -1.0
         best_idx = -1
         for i, known_enc in enumerate(known_encodings):
@@ -1066,22 +1266,37 @@ def render_popup():
         # Reset popup state so it doesn't reappear on other interactions
         st.session_state.show_popup = False
 
-# ------------------ LOGIN & ROUTING REDIRECT LOGIC ------------------
+# ------------------ DASHBOARD HEADER (after login + location) ------------------
 
-if st.session_state.redirecting:
-    role = st.session_state.target_role
-    username = st.session_state.username
-    role_title = "Student" if role == "student" else "Faculty"
+# Navigation Header with logout
+col_logo, col_role_info, col_logout = st.columns([3, 2, 1])
+with col_logo:
+    st.markdown("<h1 style='margin:0; font-size: 1.6rem; font-weight: 600; color: #f4f4f5;'>Smart Lab Attendance</h1>", unsafe_allow_html=True)
+with col_role_info:
+    role_icon = {"student": "🎓", "faculty": "🔐", "admin": "👑"}.get(st.session_state.user_role, "👤")
+    st.markdown(f"<div style='padding-top: 8px; font-size: 0.95rem; color: var(--text-secondary);'>{role_icon} <strong>{st.session_state.user_role.title()}</strong>: {st.session_state.username}</div>", unsafe_allow_html=True)
+with col_logout:
+    st.markdown("<div style='padding-top: 4px;'></div>", unsafe_allow_html=True)
+    if st.button("🚪 Logout", key="dashboard_logout_btn", use_container_width=True):
+        st.session_state.logged_in = False
+        st.session_state.user_role = ""
+        st.session_state.username = ""
+        st.session_state.student_roll = ""
+        st.session_state.location_verified = False
+        st.session_state.location_distance = None
+        st.rerun()
+
+# Student Profile Banner when logged in as student
+if st.session_state.user_role == "student" and st.session_state.student_roll:
+    student_details = get_student_face_details(st.session_state.student_roll)
     
     st.markdown(
         f"""
-        <div class="login-page" style="min-height: 80vh;">
-            <div class="login-card" style="text-align: center;">
-                <div style="font-size: 3.5rem; margin-bottom: 12px; filter: drop-shadow(var(--glow-indigo));">🔑</div>
-                <h2>Signing in...</h2>
-                <p style="color: var(--text-secondary); margin: 8px 0 0 0; font-size: 0.95rem;">Welcome — redirecting {role_title} to attendance page...</p>
-                <div class="loader-container">
-                    <div class="futuristic-loader"></div>
+        <div class="hero" style="margin-top: 15px; border-left: 4px solid var(--accent-primary);">
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;">
+                <div>
+                    <h2>🎓 Welcome Student: <span style="color: #60a5fa;">{st.session_state.student_roll}</span></h2>
+                    <p>Logged in session active. Attendance scanning is configured for <strong>1-to-1 fast face matching</strong> against your stored profile.</p>
                 </div>
             </div>
         </div>
@@ -1089,124 +1304,462 @@ if st.session_state.redirecting:
         unsafe_allow_html=True
     )
     
-    time.sleep(1.5)
-    st.session_state.logged_in = True
-    st.session_state.user_role = role
-    st.session_state.redirecting = False
-    st.rerun()
-
-else:
-    # Student direct access or faculty wants to login
-    col_logo, col_faculty_btn, col_admin_btn = st.columns([4, 1, 1])
-    with col_logo:
-        st.markdown("<h1 style='margin:0; font-size: 1.6rem; font-weight: 600; color: #f4f4f5;'>Smart Lab Attendance</h1>", unsafe_allow_html=True)
-    with col_faculty_btn:
-        st.markdown("<div style='padding-top: 4px;'></div>", unsafe_allow_html=True)
-        if st.session_state.user_role == "student":
-            if st.button("Faculty Login", key="faculty_login_nav_btn", use_container_width=True):
-                st.session_state.show_faculty_login = True
-                st.session_state.show_admin_login = False
-                st.rerun()
+    prof_col1, prof_col2 = st.columns([1, 4])
+    with prof_col1:
+        if student_details and student_details["face_path"]:
+            st.image(student_details["face_path"], caption=f"Registered Face: {st.session_state.student_roll}", width=130)
         else:
-            if st.button("Logout", key="logout_btn", use_container_width=True):
-                st.session_state.user_role = "student"
-                st.session_state.username = "Student"
-                st.rerun()
-    with col_admin_btn:
-        st.markdown("<div style='padding-top: 4px;'></div>", unsafe_allow_html=True)
-        if st.session_state.user_role == "student":
-            if st.button("Admin Login", key="admin_login_nav_btn", use_container_width=True):
-                st.session_state.show_admin_login = True
-                st.session_state.show_faculty_login = False
-                st.rerun()
-
-    # Faculty login modal if toggled
-    if st.session_state.get("show_faculty_login", False):
-        st.markdown("---")
-        st.subheader("🔐 Faculty Sign In")
-        faculty_email = st.text_input("Faculty Email", placeholder="professor@college.edu", key="faculty_email_input")
-        faculty_pw = st.text_input("Password", type="password", placeholder="••••••••", key="faculty_pw_input")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Sign In as Faculty", use_container_width=True, key="faculty_login_btn"):
-                if not faculty_email.strip():
-                    st.error("Please enter a valid Email.")
-                elif faculty_pw != "faculty123":
-                    st.error("Incorrect password. Hint: faculty123")
-                else:
-                    st.session_state.user_role = "faculty"
-                    st.session_state.username = faculty_email.strip()
-                    st.session_state.show_faculty_login = False
-                    st.rerun()
-        with col2:
-            if st.button("Cancel", use_container_width=True, key="cancel_faculty_login"):
-                st.session_state.show_faculty_login = False
-                st.rerun()
-        
-        st.markdown("---")
-            
-    # Admin login modal if toggled
-    if st.session_state.get("show_admin_login", False):
-        st.markdown("---")
-        st.subheader("👑 Admin Sign In")
-        admin_id = st.text_input("Admin ID", placeholder="admin", key="admin_id_input")
-        admin_pw = st.text_input("Password", type="password", placeholder="••••••••", key="admin_pw_input")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Sign In as Admin", use_container_width=True, key="admin_login_btn"):
-                if not admin_id.strip():
-                    st.error("Please enter Admin ID.")
-                elif admin_pw != "admin123":
-                    st.error("Incorrect password. Hint: admin123")
-                else:
-                    st.session_state.user_role = "admin"
-                    st.session_state.username = admin_id.strip()
-                    st.session_state.show_admin_login = False
-                    st.rerun()
-        with col2:
-            if st.button("Cancel", use_container_width=True, key="cancel_admin_login"):
-                st.session_state.show_admin_login = False
-                st.rerun()
-        
-        st.markdown("---")
-            
+            st.markdown("<div style='background: rgba(255,255,255,0.08); border-radius: 10px; padding: 20px; text-align: center; font-size: 2.2rem;'>👤</div>", unsafe_allow_html=True)
+            st.caption("No Face Enrolled")
+    with prof_col2:
+        if student_details and student_details["has_face"]:
+            st.success(f"✅ **Face Profile Loaded**: Registered on `{student_details['registration_date']}`. Fast 1-to-1 face verification enabled.")
+        else:
+            st.warning(f"⚠️ **Face Not Registered**: Please navigate to the '👤 Register My Face' tab below and take a photo to enable face attendance.")
+elif st.session_state.user_role == "faculty":
     st.markdown(
         """
-        <div class="hero" style="margin-top: 15px;">
-            <h2>Secure Attendance Dashboard</h2>
-            <p>Scan QR codes using your camera feed, manage student registers, and export reports directly from your secure session.</p>
+        <div class="hero" style="margin-top: 15px; border-left: 4px solid #a78bfa;">
+            <h2>🔐 Faculty Dashboard</h2>
+            <p>Manage attendance records, scan QR codes, register students, and export reports from your secure session.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+elif st.session_state.user_role == "admin":
+    st.markdown(
+        """
+        <div class="hero" style="margin-top: 15px; border-left: 4px solid #f59e0b;">
+            <h2>👑 Admin Dashboard</h2>
+            <p>Full system management: faculty, students, attendance analytics, and record maintenance.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    # Summary metrics
-    summary_df = load_data()
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    today_count = summary_df[summary_df["Date"] == today_str].shape[0]
-    unique_students = summary_df["Roll Number"].nunique()
+
+# Summary metrics
+summary_df = load_data()
+today_str = datetime.now().strftime("%Y-%m-%d")
+today_count = summary_df[summary_df["Date"] == today_str].shape[0]
+unique_students = summary_df["Roll Number"].nunique()
+
+col_a, col_b, col_c = st.columns(3)
+col_a.metric("Total Records", f"{len(summary_df)}")
+col_b.metric("Today's Marks", f"{today_count}")
+col_c.metric("Unique Students", f"{unique_students}")
+
+st.divider()    # Configure tabs based on user role
+if st.session_state.user_role == "admin":
+    tab_list = ["👨‍🏫 Manage Faculty", "📥 Download Attendance", "📊 Attendance Analytics", "🗑️ Manage Records"]
+elif st.session_state.user_role == "student":
+    tab_list = ["👤 Face & QR Attendance", "📅 My Daily Attendance", "👤 Register My Face", "📇 My QR Code"]
+else:
+    tab_list = ["👤 Face & QR Attendance", "📊 Daily & Subject-Wise Records", "🧑‍🎓 Manage Students & Faces", "📥 Download Student Record"]
     
-    col_a, col_b, col_c = st.columns(3)
-    col_a.metric("Total Records", f"{len(summary_df)}")
-    col_b.metric("Today's Marks", f"{today_count}")
-    col_c.metric("Unique Students", f"{unique_students}")
-    
-    st.divider()    # Configure tabs based on user role
-    if st.session_state.user_role == "admin":
-        tab_list = ["👨‍🏫 Manage Faculty", "📥 Download Attendance", "📊 Attendance Analytics", "🗑️ Manage Records"]
-    elif st.session_state.user_role == "student":
-        tab_list = ["👤 Face & QR Attendance", "📅 My Daily Attendance", "👤 Register My Face", "📇 My QR Code"]
-    else:
-        tab_list = ["👤 Face & QR Attendance", "📊 Daily & Subject-Wise Records", "🧑‍🎓 Manage Students & Faces", "📥 Download Student Record"]
-        
-    tabs = st.tabs(tab_list)
-    
-    # Define subjects hierarchy (used across admin tabs)
-    SUBJECTS_BY_YEAR_SEM = {
+tabs = st.tabs(tab_list)
+
+# Define subjects hierarchy (used across admin tabs)
+SUBJECTS_BY_YEAR_SEM = {
+    "1st Year": {
+        "1st Sem": ["C Programing", "DigitalLogics"],
+        "2nd Sem": ["Cpp", "DataStructure"]
+    },
+    "2nd Year": {
+        "3rd Sem": ["DBMS", "JAVA", "WebDesigen"],
+        "4th Sem": ["Python", "Operating System", "Computer Graphics"]
+    },
+    "3rd Year": {
+        "5th Sem": ["PHP", "DAA", "C#"],
+        "6th Sem": ["AIML"]
+    }
+}
+
+ALL_YEARS = list(SUBJECTS_BY_YEAR_SEM.keys())
+ALL_SEMESTERS = {yr: list(sems.keys()) for yr, sems in SUBJECTS_BY_YEAR_SEM.items()}
+
+if st.session_state.user_role == "admin":
+    # ==================== TAB 0: MANAGE FACULTY ====================
+    with tabs[0]:
+        st.header("👨‍🏫 Manage Faculty")
+        st.markdown("<div class='section-note'>Add new faculty members with their year, semester, and subject assignments. Edit or remove existing entries.</div>", unsafe_allow_html=True)
+        fac_df = load_faculties_registry()
+
+        with st.form("add_faculty_form"):
+            st.subheader("➕ Add New Faculty")
+            f_name = st.text_input("Faculty Name", placeholder="e.g. Dr. John Doe")
+            f_email = st.text_input("Faculty Email", placeholder="e.g. john@college.edu")
+
+            f_year = st.selectbox("Year", ALL_YEARS, key="add_fac_year")
+            available_sems = ALL_SEMESTERS.get(f_year, [])
+            f_sem = st.selectbox("Semester", available_sems if available_sems else ["N/A"], key="add_fac_sem")
+
+            # Get subjects for the selected year/semester
+            available_subjects = SUBJECTS_BY_YEAR_SEM.get(f_year, {}).get(f_sem, [])
+            if available_subjects:
+                f_dept = st.selectbox("Subject", available_subjects, key="add_fac_subject")
+            else:
+                f_dept = st.text_input("Subject (no predefined subjects for this semester)", placeholder="e.g. Python, DBMS", key="add_fac_subject_manual")
+
+            submitted = st.form_submit_button("➕ Add Faculty", type="primary")
+            if submitted:
+                if f_name and f_email and f_dept:
+                    # Check for duplicate: same name + same subject + same semester
+                    dup = fac_df[
+                        (fac_df["Name"].fillna("").astype(str).str.strip().str.lower() == f_name.strip().lower()) &
+                        (fac_df["Department"].fillna("").astype(str).str.strip().str.lower() == str(f_dept).strip().lower()) &
+                        (fac_df["Semester"].fillna("").astype(str).str.strip().str.lower() == str(f_sem).strip().lower())
+                    ]
+                    if not dup.empty:
+                        st.error(f"⚠️ {f_name} is already assigned to {f_dept} in {f_sem}. Duplicate entry blocked.")
+                    else:
+                        with get_db_connection() as conn:
+                            conn.execute(
+                                "INSERT INTO faculties (name, email, department, year, semester) VALUES (?, ?, ?, ?, ?)",
+                                (f_name.strip(), f_email.strip(), str(f_dept).strip(), f_year, f_sem)
+                            )
+                            conn.commit()
+                        st.success(f"✅ Successfully added **{f_name}** → {f_dept} ({f_year} / {f_sem})")
+                        st.rerun()
+                else:
+                    st.error("Please fill in all fields.")
+
+        st.divider()
+        st.subheader("📋 Registered Faculties")
+        if fac_df.empty:
+            st.info("No faculties registered yet. Use the form above to add your first faculty.")
+        else:
+            st.dataframe(
+                fac_df[["Name", "Email", "Department", "Year", "Semester"]],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Name": st.column_config.TextColumn("Faculty Name", width="medium"),
+                    "Email": st.column_config.TextColumn("Email", width="medium"),
+                    "Department": st.column_config.TextColumn("Subject", width="medium"),
+                    "Year": st.column_config.TextColumn("Year", width="small"),
+                    "Semester": st.column_config.TextColumn("Semester", width="small"),
+                }
+            )
+
+            # Delete faculty option
+            st.subheader("🗑️ Remove Faculty")
+            fac_options = fac_df.apply(
+                lambda r: f"{r['Name']} — {r.get('Department', '')} ({r.get('Year', '')} / {r.get('Semester', '')})",
+                axis=1
+            ).tolist()
+            fac_to_delete = st.selectbox("Select faculty to remove:", ["-- Select --"] + fac_options, key="del_fac_select")
+            if fac_to_delete != "-- Select --":
+                idx_to_del = fac_options.index(fac_to_delete)
+                if st.button("🗑️ Delete Selected Faculty", type="primary", key="del_fac_btn"):
+                    sel_row = fac_df.iloc[idx_to_del]
+                    fac_id = sel_row.get("id")
+                    with get_db_connection() as conn:
+                        if fac_id and not pd.isna(fac_id):
+                            conn.execute("DELETE FROM faculties WHERE id = ?", (int(fac_id),))
+                        else:
+                            conn.execute("DELETE FROM faculties WHERE name = ? AND department = ?", (str(sel_row["Name"]), str(sel_row["Department"])))
+                        conn.commit()
+                    st.success(f"✅ Removed: {fac_to_delete}")
+                    st.rerun()
+
+    # ==================== TAB 1: DOWNLOAD ATTENDANCE ====================
+    with tabs[1]:
+        st.header("📥 Download Attendance Records")
+        st.markdown("<div class='section-note'>Download attendance records <strong>per faculty</strong>, filtered by <strong>subject</strong> and <strong>semester</strong>. Each faculty's data can be downloaded separately as CSV, or download everything as a ZIP.</div>", unsafe_allow_html=True)
+
+        fac_df = load_faculties_registry()
+        att_df = load_data()
+
+        if fac_df.empty:
+            st.warning("⚠️ No faculties registered yet. Go to **Manage Faculty** tab to add faculties first.")
+        elif att_df.empty:
+            st.warning("⚠️ No attendance records found yet.")
+        else:
+            # --- Filters Section ---
+            st.subheader("🔍 Filter Options")
+
+            filter_col1, filter_col2, filter_col3 = st.columns(3)
+            with filter_col1:
+                dl_year_filter = st.selectbox("Filter by Year", ["All Years"] + ALL_YEARS, key="admin_dl_year")
+            with filter_col2:
+                if dl_year_filter != "All Years":
+                    sem_options = ALL_SEMESTERS.get(dl_year_filter, [])
+                else:
+                    sem_options = sorted(set(s for sems in ALL_SEMESTERS.values() for s in sems))
+                dl_sem_filter = st.selectbox("Filter by Semester", ["All Semesters"] + sem_options, key="admin_dl_sem")
+            with filter_col3:
+                fac_names_unique = sorted(fac_df["Name"].dropna().unique().tolist())
+                dl_fac_filter = st.selectbox("Filter by Faculty", ["All Faculties"] + fac_names_unique, key="admin_dl_fac")
+
+            col_start, col_end = st.columns(2)
+            with col_start:
+                start_date = st.date_input(
+                    "Start Date",
+                    value=pd.to_datetime(att_df["Date"].min()).date() if not att_df.empty else datetime.now().date(),
+                    key="admin_dl_start_date"
+                )
+            with col_end:
+                end_date = st.date_input(
+                    "End Date",
+                    value=datetime.now().date(),
+                    key="admin_dl_end_date"
+                )
+
+            start_str = start_date.strftime("%Y-%m-%d")
+            end_str = end_date.strftime("%Y-%m-%d")
+
+            # Filter attendance by date range
+            date_filtered_att = att_df[(att_df["Date"] >= start_str) & (att_df["Date"] <= end_str)]
+
+            # Apply filters to faculty list
+            filtered_fac = fac_df.copy()
+            for _col in ["Year", "Semester", "Name", "Department"]:
+                if _col in filtered_fac.columns:
+                    filtered_fac[_col] = filtered_fac[_col].fillna("").astype(str)
+            if dl_year_filter != "All Years":
+                filtered_fac = filtered_fac[filtered_fac["Year"].str.strip() == dl_year_filter]
+            if dl_sem_filter != "All Semesters":
+                filtered_fac = filtered_fac[filtered_fac["Semester"].str.strip() == dl_sem_filter]
+            if dl_fac_filter != "All Faculties":
+                filtered_fac = filtered_fac[filtered_fac["Name"].str.strip() == dl_fac_filter]
+
+            if date_filtered_att.empty:
+                st.info(f"No attendance records found between {start_date.strftime('%b %d, %Y')} and {end_date.strftime('%b %d, %Y')}.")
+            elif filtered_fac.empty:
+                st.info("No faculties match the selected filters.")
+            else:
+                # Count matching records
+                total_matching = 0
+                for _, fac_row in filtered_fac.iterrows():
+                    fac_subject = str(fac_row.get("Department", "")).strip()
+                    if fac_subject:
+                        subject_att = date_filtered_att[date_filtered_att["Lab"].str.strip().str.lower() == fac_subject.lower()]
+                        total_matching += len(subject_att)
+
+                st.success(f"📋 Found **{total_matching}** records across **{len(filtered_fac)}** faculty entries — **{start_date.strftime('%b %d, %Y')}** to **{end_date.strftime('%b %d, %Y')}**")
+
+                st.divider()
+
+                # --- Bulk Download ZIP ---
+                st.subheader("📦 Bulk Download (ZIP)")
+                st.markdown("Download all filtered faculty attendance data as a single ZIP file, organized by semester.")
+
+                import zipfile
+                zip_buffer = BytesIO()
+                has_data = False
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for _, fac_row in filtered_fac.iterrows():
+                        fac_subject = str(fac_row.get("Department", "")).strip()
+                        fac_name = str(fac_row.get("Name", "")).strip()
+                        fac_sem = str(fac_row.get("Semester", "")).strip()
+                        fac_year = str(fac_row.get("Year", "")).strip()
+                        if not fac_subject:
+                            continue
+                        subject_data = date_filtered_att[date_filtered_att["Lab"].str.strip().str.lower() == fac_subject.lower()]
+                        if not subject_data.empty:
+                            has_data = True
+                            csv_content = subject_data[["Roll Number", "Date", "Time", "Lab"]].to_csv(index=False)
+                            safe_name = fac_name.replace(" ", "_") if fac_name else fac_subject.replace(" ", "_")
+                            safe_sem = fac_sem.replace(" ", "_") if fac_sem else "unknown_sem"
+                            folder = f"{fac_year.replace(' ', '_')}/{safe_sem}" if fac_year else safe_sem
+                            zf.writestr(f"{folder}/{safe_name}_{fac_subject}_attendance.csv", csv_content)
+
+                if has_data:
+                    st.download_button(
+                        label="⬇️ Download All Filtered Attendance (ZIP)",
+                        data=zip_buffer.getvalue(),
+                        file_name=f"faculty_attendance_{start_str}_to_{end_str}.zip",
+                        mime="application/zip",
+                        key="admin_dl_all_zip",
+                        use_container_width=True,
+                    )
+                else:
+                    st.info("No matching attendance data found for the filtered faculty subjects.")
+
+                st.divider()
+
+                # --- Per-Faculty Download Cards (grouped by semester) ---
+                st.subheader("👨‍🏫 Download Per Faculty / Semester")
+
+                # Group filtered faculties by Year → Semester
+                grouped_by_sem = {}
+                for _, fac_row in filtered_fac.iterrows():
+                    yr = str(fac_row.get("Year", "Unspecified")).strip() or "Unspecified"
+                    sm = str(fac_row.get("Semester", "Unspecified")).strip() or "Unspecified"
+                    key = f"{yr} — {sm}"
+                    if key not in grouped_by_sem:
+                        grouped_by_sem[key] = []
+                    grouped_by_sem[key].append(fac_row)
+
+                for group_label, fac_rows in grouped_by_sem.items():
+                    st.markdown(f"#### 📅 {group_label}")
+
+                    for fac_row in fac_rows:
+                        fac_idx = fac_row.name if hasattr(fac_row, 'name') else 0
+                        fac_name = str(fac_row.get("Name", "Unknown")).strip()
+                        fac_email = str(fac_row.get("Email", "")).strip()
+                        fac_subject = str(fac_row.get("Department", "")).strip()
+                        fac_year = str(fac_row.get("Year", "")).strip()
+                        fac_sem = str(fac_row.get("Semester", "")).strip()
+
+                        if not fac_subject:
+                            continue
+
+                        # Filter attendance for this faculty's subject
+                        subject_att = date_filtered_att[date_filtered_att["Lab"].str.strip().str.lower() == fac_subject.lower()]
+
+                        with st.expander(f"👤 {fac_name} — 📚 {fac_subject} — 🗓️ {fac_sem} ({len(subject_att)} records)", expanded=False):
+                            st.markdown(f"""
+                            | Field | Value |
+                            |-------|-------|
+                            | **Faculty Name** | {fac_name} |
+                            | **Email** | {fac_email} |
+                            | **Subject** | {fac_subject} |
+                            | **Year** | {fac_year} |
+                            | **Semester** | {fac_sem} |
+                            | **Total Records** | {len(subject_att)} |
+                            | **Unique Students** | {subject_att['Roll Number'].nunique() if not subject_att.empty else 0} |
+                            | **Date Range** | {start_date.strftime('%b %d, %Y')} → {end_date.strftime('%b %d, %Y')} |
+                            """)
+
+                            if subject_att.empty:
+                                st.info(f"No attendance records found for **{fac_subject}** in the selected date range.")
+                            else:
+                                st.dataframe(
+                                    subject_att[["Roll Number", "Date", "Time", "Lab"]].sort_values(["Date", "Time"], ascending=[False, False]),
+                                    use_container_width=True,
+                                    hide_index=True,
+                                    column_config={
+                                        "Roll Number": st.column_config.TextColumn("Student Roll Number", width="medium"),
+                                        "Date": st.column_config.TextColumn("Date", width="small"),
+                                        "Time": st.column_config.TextColumn("Time", width="small"),
+                                        "Lab": st.column_config.TextColumn("Subject", width="medium"),
+                                    }
+                                )
+
+                                m1, m2, m3 = st.columns(3)
+                                with m1:
+                                    st.metric("Total Records", len(subject_att))
+                                with m2:
+                                    st.metric("Unique Students", subject_att["Roll Number"].nunique())
+                                with m3:
+                                    st.metric("Active Days", subject_att["Date"].nunique())
+
+                                csv_data = subject_att[["Roll Number", "Date", "Time", "Lab"]].to_csv(index=False).encode("utf-8")
+                                safe_fname = fac_name.replace(" ", "_")
+                                safe_sem_name = fac_sem.replace(" ", "_") if fac_sem else "all"
+                                st.download_button(
+                                    label=f"⬇️ Download {fac_subject} — {fac_sem} Attendance CSV",
+                                    data=csv_data,
+                                    file_name=f"{safe_fname}_{fac_subject}_{safe_sem_name}_{start_str}_to_{end_str}.csv",
+                                    mime="text/csv",
+                                    key=f"admin_dl_fac_{fac_idx}_{fac_subject}_{safe_sem_name}",
+                                    use_container_width=True,
+                                )
+
+                    st.markdown("---")
+
+                # --- Summary Table ---
+                st.subheader("📊 Faculty Summary Table")
+                summary_rows = []
+                for _, fac_row in filtered_fac.iterrows():
+                    fac_name = str(fac_row.get("Name", "Unknown")).strip()
+                    fac_subject = str(fac_row.get("Department", "")).strip()
+                    fac_year = str(fac_row.get("Year", "")).strip()
+                    fac_sem = str(fac_row.get("Semester", "")).strip()
+                    if not fac_subject:
+                        continue
+                    subject_att = date_filtered_att[date_filtered_att["Lab"].str.strip().str.lower() == fac_subject.lower()]
+                    summary_rows.append({
+                        "Faculty": fac_name,
+                        "Subject": fac_subject,
+                        "Year": fac_year,
+                        "Semester": fac_sem,
+                        "Total Records": len(subject_att),
+                        "Unique Students": subject_att["Roll Number"].nunique() if not subject_att.empty else 0,
+                        "Active Days": subject_att["Date"].nunique() if not subject_att.empty else 0,
+                    })
+
+                if summary_rows:
+                    summary_table = pd.DataFrame(summary_rows)
+                    st.dataframe(summary_table, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No faculty subjects to summarize.")
+
+    # ==================== TAB 2: ATTENDANCE ANALYTICS ====================
+    with tabs[2]:
+        st.header("📊 Attendance Analytics")
+        st.markdown("<div class='section-note'>Overview of student attendance trends.</div>", unsafe_allow_html=True)
+        att_df = load_data()
+        if not att_df.empty:
+            st.subheader("📈 Attendance Over Time")
+            date_counts = att_df.groupby("Date").size().reset_index(name="Total Attendance")
+            st.line_chart(date_counts.set_index("Date"), use_container_width=True)
+
+            st.divider()
+
+            st.subheader("📚 Attendance by Lab Subject")
+            lab_counts = att_df.groupby("Lab").size().reset_index(name="Total Attendance")
+            st.bar_chart(lab_counts.set_index("Lab"), use_container_width=True)
+        else:
+            st.info("No attendance records found yet.")
+
+    # ==================== TAB 3: MANAGE RECORDS (Delete etc.) ====================
+    with tabs[3]:
+        st.header("🗑️ Manage Attendance Records")
+        st.markdown("<div class='section-note'>View, search, and delete attendance records. Use with caution — deletions are permanent.</div>", unsafe_allow_html=True)
+
+        att_df_manage = load_data()
+        if att_df_manage.empty:
+            st.info("No attendance records found.")
+        else:
+            manage_date = st.date_input("Select Date", value=datetime.now().date(), key="admin_manage_date")
+            manage_date_str = manage_date.strftime("%Y-%m-%d")
+            day_records = att_df_manage[att_df_manage["Date"] == manage_date_str]
+
+            if day_records.empty:
+                st.info(f"No records for {manage_date.strftime('%B %d, %Y')}.")
+            else:
+                st.dataframe(day_records, use_container_width=True, hide_index=True)
+
+                st.subheader("Delete Individual Record")
+                rec_options = day_records.apply(lambda r: f"{r['Roll Number']} — {r['Lab']} — {r['Time']}", axis=1).tolist()
+                rec_indices = day_records.index.tolist()
+                rec_map = dict(zip(rec_options, rec_indices))
+                rec_to_del = st.selectbox("Select record:", ["-- Select --"] + rec_options, key="admin_del_rec")
+                if rec_to_del != "-- Select --":
+                    if st.button("🗑️ Delete Record", type="primary", key="admin_del_rec_btn"):
+                        sel_rec = day_records.loc[rec_map[rec_to_del]]
+                        with get_db_connection() as conn:
+                            conn.execute(
+                                "DELETE FROM attendance WHERE roll_number = ? AND date = ? AND time = ? AND lab = ?",
+                                (str(sel_rec["Roll Number"]), str(sel_rec["Date"]), str(sel_rec["Time"]), str(sel_rec["Lab"]))
+                            )
+                            conn.commit()
+                        st.success(f"✅ Deleted: {rec_to_del}")
+                        st.rerun()
+
+                st.divider()
+                if st.button(f"🗑️ Delete ALL records for {manage_date.strftime('%b %d, %Y')}", key="admin_del_day_btn"):
+                    with get_db_connection() as conn:
+                        conn.execute("DELETE FROM attendance WHERE date = ?", (manage_date_str,))
+                        conn.commit()
+                    st.success(f"✅ Deleted all records for {manage_date.strftime('%b %d, %Y')}")
+                    st.rerun()
+
+    st.stop()
+
+with tabs[0]:
+    st.header("👤 Face & QR Scanner Attendance")
+    # Initialize selected_subject in session state if not already set
+    if 'selected_subject' not in st.session_state:
+        st.session_state.selected_subject = "C Programing"
+
+    # Define subjects hierarchy
+    subjects_by_year_sem = {
         "1st Year": {
-            "1st Sem": ["C Programing", "DigitalLogics"],
+            "1st Sem": ["C Programing", "DigitalLogics",],
             "2nd Sem": ["Cpp", "DataStructure"]
         },
         "2nd Year": {
@@ -1214,559 +1767,186 @@ else:
             "4th Sem": ["Python", "Operating System", "Computer Graphics"]
         },
         "3rd Year": {
-            "5th Sem": ["PHP", "DAA", "C#"],
+            "5th Sem": ["PHP","DAA","C#",],
             "6th Sem": ["AIML"]
         }
     }
 
-    ALL_YEARS = list(SUBJECTS_BY_YEAR_SEM.keys())
-    ALL_SEMESTERS = {yr: list(sems.keys()) for yr, sems in SUBJECTS_BY_YEAR_SEM.items()}
+    st.markdown('<div class="subject-selection-marker"></div>', unsafe_allow_html=True)
 
-    if st.session_state.user_role == "admin":
-        # ==================== TAB 0: MANAGE FACULTY ====================
-        with tabs[0]:
-            st.header("👨‍🏫 Manage Faculty")
-            st.markdown("<div class='section-note'>Add new faculty members with their year, semester, and subject assignments. Edit or remove existing entries.</div>", unsafe_allow_html=True)
-            fac_df = load_faculties_registry()
+    # Dynamic accordion: expand only the year that contains the selected subject
+    active_year = "1st Year"
+    for yr, sems in subjects_by_year_sem.items():
+        for sem, subs in sems.items():
+            if st.session_state.selected_subject in subs:
+                active_year = yr
 
-            with st.form("add_faculty_form"):
-                st.subheader("➕ Add New Faculty")
-                f_name = st.text_input("Faculty Name", placeholder="e.g. Dr. John Doe")
-                f_email = st.text_input("Faculty Email", placeholder="e.g. john@college.edu")
-
-                f_year = st.selectbox("Year", ALL_YEARS, key="add_fac_year")
-                available_sems = ALL_SEMESTERS.get(f_year, [])
-                f_sem = st.selectbox("Semester", available_sems if available_sems else ["N/A"], key="add_fac_sem")
-
-                # Get subjects for the selected year/semester
-                available_subjects = SUBJECTS_BY_YEAR_SEM.get(f_year, {}).get(f_sem, [])
-                if available_subjects:
-                    f_dept = st.selectbox("Subject", available_subjects, key="add_fac_subject")
-                else:
-                    f_dept = st.text_input("Subject (no predefined subjects for this semester)", placeholder="e.g. Python, DBMS", key="add_fac_subject_manual")
-
-                submitted = st.form_submit_button("➕ Add Faculty", type="primary")
-                if submitted:
-                    if f_name and f_email and f_dept:
-                        # Check for duplicate: same name + same subject + same semester
-                        dup = fac_df[
-                            (fac_df["Name"].fillna("").astype(str).str.strip().str.lower() == f_name.strip().lower()) &
-                            (fac_df["Department"].fillna("").astype(str).str.strip().str.lower() == str(f_dept).strip().lower()) &
-                            (fac_df["Semester"].fillna("").astype(str).str.strip().str.lower() == str(f_sem).strip().lower())
-                        ]
-                        if not dup.empty:
-                            st.error(f"⚠️ {f_name} is already assigned to {f_dept} in {f_sem}. Duplicate entry blocked.")
-                        else:
-                            with get_db_connection() as conn:
-                                conn.execute(
-                                    "INSERT INTO faculties (name, email, department, year, semester) VALUES (?, ?, ?, ?, ?)",
-                                    (f_name.strip(), f_email.strip(), str(f_dept).strip(), f_year, f_sem)
-                                )
-                                conn.commit()
-                            st.success(f"✅ Successfully added **{f_name}** → {f_dept} ({f_year} / {f_sem})")
-                            st.rerun()
-                    else:
-                        st.error("Please fill in all fields.")
-
-            st.divider()
-            st.subheader("📋 Registered Faculties")
-            if fac_df.empty:
-                st.info("No faculties registered yet. Use the form above to add your first faculty.")
-            else:
-                st.dataframe(
-                    fac_df[["Name", "Email", "Department", "Year", "Semester"]],
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "Name": st.column_config.TextColumn("Faculty Name", width="medium"),
-                        "Email": st.column_config.TextColumn("Email", width="medium"),
-                        "Department": st.column_config.TextColumn("Subject", width="medium"),
-                        "Year": st.column_config.TextColumn("Year", width="small"),
-                        "Semester": st.column_config.TextColumn("Semester", width="small"),
-                    }
-                )
-
-                # Delete faculty option
-                st.subheader("🗑️ Remove Faculty")
-                fac_options = fac_df.apply(
-                    lambda r: f"{r['Name']} — {r.get('Department', '')} ({r.get('Year', '')} / {r.get('Semester', '')})",
-                    axis=1
-                ).tolist()
-                fac_to_delete = st.selectbox("Select faculty to remove:", ["-- Select --"] + fac_options, key="del_fac_select")
-                if fac_to_delete != "-- Select --":
-                    idx_to_del = fac_options.index(fac_to_delete)
-                    if st.button("🗑️ Delete Selected Faculty", type="primary", key="del_fac_btn"):
-                        sel_row = fac_df.iloc[idx_to_del]
-                        fac_id = sel_row.get("id")
-                        with get_db_connection() as conn:
-                            if fac_id and not pd.isna(fac_id):
-                                conn.execute("DELETE FROM faculties WHERE id = ?", (int(fac_id),))
-                            else:
-                                conn.execute("DELETE FROM faculties WHERE name = ? AND department = ?", (str(sel_row["Name"]), str(sel_row["Department"])))
-                            conn.commit()
-                        st.success(f"✅ Removed: {fac_to_delete}")
-                        st.rerun()
-
-        # ==================== TAB 1: DOWNLOAD ATTENDANCE ====================
-        with tabs[1]:
-            st.header("📥 Download Attendance Records")
-            st.markdown("<div class='section-note'>Download attendance records <strong>per faculty</strong>, filtered by <strong>subject</strong> and <strong>semester</strong>. Each faculty's data can be downloaded separately as CSV, or download everything as a ZIP.</div>", unsafe_allow_html=True)
-
-            fac_df = load_faculties_registry()
-            att_df = load_data()
-
-            if fac_df.empty:
-                st.warning("⚠️ No faculties registered yet. Go to **Manage Faculty** tab to add faculties first.")
-            elif att_df.empty:
-                st.warning("⚠️ No attendance records found yet.")
-            else:
-                # --- Filters Section ---
-                st.subheader("🔍 Filter Options")
-
-                filter_col1, filter_col2, filter_col3 = st.columns(3)
-                with filter_col1:
-                    dl_year_filter = st.selectbox("Filter by Year", ["All Years"] + ALL_YEARS, key="admin_dl_year")
-                with filter_col2:
-                    if dl_year_filter != "All Years":
-                        sem_options = ALL_SEMESTERS.get(dl_year_filter, [])
-                    else:
-                        sem_options = sorted(set(s for sems in ALL_SEMESTERS.values() for s in sems))
-                    dl_sem_filter = st.selectbox("Filter by Semester", ["All Semesters"] + sem_options, key="admin_dl_sem")
-                with filter_col3:
-                    fac_names_unique = sorted(fac_df["Name"].dropna().unique().tolist())
-                    dl_fac_filter = st.selectbox("Filter by Faculty", ["All Faculties"] + fac_names_unique, key="admin_dl_fac")
-
-                col_start, col_end = st.columns(2)
-                with col_start:
-                    start_date = st.date_input(
-                        "Start Date",
-                        value=pd.to_datetime(att_df["Date"].min()).date() if not att_df.empty else datetime.now().date(),
-                        key="admin_dl_start_date"
-                    )
-                with col_end:
-                    end_date = st.date_input(
-                        "End Date",
-                        value=datetime.now().date(),
-                        key="admin_dl_end_date"
-                    )
-
-                start_str = start_date.strftime("%Y-%m-%d")
-                end_str = end_date.strftime("%Y-%m-%d")
-
-                # Filter attendance by date range
-                date_filtered_att = att_df[(att_df["Date"] >= start_str) & (att_df["Date"] <= end_str)]
-
-                # Apply filters to faculty list
-                filtered_fac = fac_df.copy()
-                for _col in ["Year", "Semester", "Name", "Department"]:
-                    if _col in filtered_fac.columns:
-                        filtered_fac[_col] = filtered_fac[_col].fillna("").astype(str)
-                if dl_year_filter != "All Years":
-                    filtered_fac = filtered_fac[filtered_fac["Year"].str.strip() == dl_year_filter]
-                if dl_sem_filter != "All Semesters":
-                    filtered_fac = filtered_fac[filtered_fac["Semester"].str.strip() == dl_sem_filter]
-                if dl_fac_filter != "All Faculties":
-                    filtered_fac = filtered_fac[filtered_fac["Name"].str.strip() == dl_fac_filter]
-
-                if date_filtered_att.empty:
-                    st.info(f"No attendance records found between {start_date.strftime('%b %d, %Y')} and {end_date.strftime('%b %d, %Y')}.")
-                elif filtered_fac.empty:
-                    st.info("No faculties match the selected filters.")
-                else:
-                    # Count matching records
-                    total_matching = 0
-                    for _, fac_row in filtered_fac.iterrows():
-                        fac_subject = str(fac_row.get("Department", "")).strip()
-                        if fac_subject:
-                            subject_att = date_filtered_att[date_filtered_att["Lab"].str.strip().str.lower() == fac_subject.lower()]
-                            total_matching += len(subject_att)
-
-                    st.success(f"📋 Found **{total_matching}** records across **{len(filtered_fac)}** faculty entries — **{start_date.strftime('%b %d, %Y')}** to **{end_date.strftime('%b %d, %Y')}**")
-
-                    st.divider()
-
-                    # --- Bulk Download ZIP ---
-                    st.subheader("📦 Bulk Download (ZIP)")
-                    st.markdown("Download all filtered faculty attendance data as a single ZIP file, organized by semester.")
-
-                    import zipfile
-                    zip_buffer = BytesIO()
-                    has_data = False
-                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                        for _, fac_row in filtered_fac.iterrows():
-                            fac_subject = str(fac_row.get("Department", "")).strip()
-                            fac_name = str(fac_row.get("Name", "")).strip()
-                            fac_sem = str(fac_row.get("Semester", "")).strip()
-                            fac_year = str(fac_row.get("Year", "")).strip()
-                            if not fac_subject:
-                                continue
-                            subject_data = date_filtered_att[date_filtered_att["Lab"].str.strip().str.lower() == fac_subject.lower()]
-                            if not subject_data.empty:
-                                has_data = True
-                                csv_content = subject_data[["Roll Number", "Date", "Time", "Lab"]].to_csv(index=False)
-                                safe_name = fac_name.replace(" ", "_") if fac_name else fac_subject.replace(" ", "_")
-                                safe_sem = fac_sem.replace(" ", "_") if fac_sem else "unknown_sem"
-                                folder = f"{fac_year.replace(' ', '_')}/{safe_sem}" if fac_year else safe_sem
-                                zf.writestr(f"{folder}/{safe_name}_{fac_subject}_attendance.csv", csv_content)
-
-                    if has_data:
-                        st.download_button(
-                            label="⬇️ Download All Filtered Attendance (ZIP)",
-                            data=zip_buffer.getvalue(),
-                            file_name=f"faculty_attendance_{start_str}_to_{end_str}.zip",
-                            mime="application/zip",
-                            key="admin_dl_all_zip",
-                            use_container_width=True,
-                        )
-                    else:
-                        st.info("No matching attendance data found for the filtered faculty subjects.")
-
-                    st.divider()
-
-                    # --- Per-Faculty Download Cards (grouped by semester) ---
-                    st.subheader("👨‍🏫 Download Per Faculty / Semester")
-
-                    # Group filtered faculties by Year → Semester
-                    grouped_by_sem = {}
-                    for _, fac_row in filtered_fac.iterrows():
-                        yr = str(fac_row.get("Year", "Unspecified")).strip() or "Unspecified"
-                        sm = str(fac_row.get("Semester", "Unspecified")).strip() or "Unspecified"
-                        key = f"{yr} — {sm}"
-                        if key not in grouped_by_sem:
-                            grouped_by_sem[key] = []
-                        grouped_by_sem[key].append(fac_row)
-
-                    for group_label, fac_rows in grouped_by_sem.items():
-                        st.markdown(f"#### 📅 {group_label}")
-
-                        for fac_row in fac_rows:
-                            fac_idx = fac_row.name if hasattr(fac_row, 'name') else 0
-                            fac_name = str(fac_row.get("Name", "Unknown")).strip()
-                            fac_email = str(fac_row.get("Email", "")).strip()
-                            fac_subject = str(fac_row.get("Department", "")).strip()
-                            fac_year = str(fac_row.get("Year", "")).strip()
-                            fac_sem = str(fac_row.get("Semester", "")).strip()
-
-                            if not fac_subject:
-                                continue
-
-                            # Filter attendance for this faculty's subject
-                            subject_att = date_filtered_att[date_filtered_att["Lab"].str.strip().str.lower() == fac_subject.lower()]
-
-                            with st.expander(f"👤 {fac_name} — 📚 {fac_subject} — 🗓️ {fac_sem} ({len(subject_att)} records)", expanded=False):
-                                st.markdown(f"""
-                                | Field | Value |
-                                |-------|-------|
-                                | **Faculty Name** | {fac_name} |
-                                | **Email** | {fac_email} |
-                                | **Subject** | {fac_subject} |
-                                | **Year** | {fac_year} |
-                                | **Semester** | {fac_sem} |
-                                | **Total Records** | {len(subject_att)} |
-                                | **Unique Students** | {subject_att['Roll Number'].nunique() if not subject_att.empty else 0} |
-                                | **Date Range** | {start_date.strftime('%b %d, %Y')} → {end_date.strftime('%b %d, %Y')} |
-                                """)
-
-                                if subject_att.empty:
-                                    st.info(f"No attendance records found for **{fac_subject}** in the selected date range.")
-                                else:
-                                    st.dataframe(
-                                        subject_att[["Roll Number", "Date", "Time", "Lab"]].sort_values(["Date", "Time"], ascending=[False, False]),
-                                        use_container_width=True,
-                                        hide_index=True,
-                                        column_config={
-                                            "Roll Number": st.column_config.TextColumn("Student Roll Number", width="medium"),
-                                            "Date": st.column_config.TextColumn("Date", width="small"),
-                                            "Time": st.column_config.TextColumn("Time", width="small"),
-                                            "Lab": st.column_config.TextColumn("Subject", width="medium"),
-                                        }
-                                    )
-
-                                    m1, m2, m3 = st.columns(3)
-                                    with m1:
-                                        st.metric("Total Records", len(subject_att))
-                                    with m2:
-                                        st.metric("Unique Students", subject_att["Roll Number"].nunique())
-                                    with m3:
-                                        st.metric("Active Days", subject_att["Date"].nunique())
-
-                                    csv_data = subject_att[["Roll Number", "Date", "Time", "Lab"]].to_csv(index=False).encode("utf-8")
-                                    safe_fname = fac_name.replace(" ", "_")
-                                    safe_sem_name = fac_sem.replace(" ", "_") if fac_sem else "all"
-                                    st.download_button(
-                                        label=f"⬇️ Download {fac_subject} — {fac_sem} Attendance CSV",
-                                        data=csv_data,
-                                        file_name=f"{safe_fname}_{fac_subject}_{safe_sem_name}_{start_str}_to_{end_str}.csv",
-                                        mime="text/csv",
-                                        key=f"admin_dl_fac_{fac_idx}_{fac_subject}_{safe_sem_name}",
-                                        use_container_width=True,
-                                    )
-
-                        st.markdown("---")
-
-                    # --- Summary Table ---
-                    st.subheader("📊 Faculty Summary Table")
-                    summary_rows = []
-                    for _, fac_row in filtered_fac.iterrows():
-                        fac_name = str(fac_row.get("Name", "Unknown")).strip()
-                        fac_subject = str(fac_row.get("Department", "")).strip()
-                        fac_year = str(fac_row.get("Year", "")).strip()
-                        fac_sem = str(fac_row.get("Semester", "")).strip()
-                        if not fac_subject:
+    for yr in ["1st Year", "2nd Year", "3rd Year"]:
+        is_expanded = (yr == active_year)
+        with st.expander(f"📅 {yr}", expanded=is_expanded):
+            sems = list(subjects_by_year_sem[yr].keys())
+            sem_cols = st.columns(len(sems))
+            for s_idx, sem in enumerate(sems):
+                with sem_cols[s_idx]:
+                    st.markdown(f"<div style='font-size: 0.95rem; color: #222222; margin-top: 4px; margin-bottom: 8px; font-weight: 600;'>{sem}</div>", unsafe_allow_html=True)
+                    subs = subjects_by_year_sem[yr][sem]
+                    for sub in subs:
+                        if not sub:
+                            st.markdown("<p style='color:#888;margin:0;font-size:0.875rem;'>No subjects added yet</p>", unsafe_allow_html=True)
                             continue
-                        subject_att = date_filtered_att[date_filtered_att["Lab"].str.strip().str.lower() == fac_subject.lower()]
-                        summary_rows.append({
-                            "Faculty": fac_name,
-                            "Subject": fac_subject,
-                            "Year": fac_year,
-                            "Semester": fac_sem,
-                            "Total Records": len(subject_att),
-                            "Unique Students": subject_att["Roll Number"].nunique() if not subject_att.empty else 0,
-                            "Active Days": subject_att["Date"].nunique() if not subject_att.empty else 0,
-                        })
-
-                    if summary_rows:
-                        summary_table = pd.DataFrame(summary_rows)
-                        st.dataframe(summary_table, use_container_width=True, hide_index=True)
-                    else:
-                        st.info("No faculty subjects to summarize.")
-
-        # ==================== TAB 2: ATTENDANCE ANALYTICS ====================
-        with tabs[2]:
-            st.header("📊 Attendance Analytics")
-            st.markdown("<div class='section-note'>Overview of student attendance trends.</div>", unsafe_allow_html=True)
-            att_df = load_data()
-            if not att_df.empty:
-                st.subheader("📈 Attendance Over Time")
-                date_counts = att_df.groupby("Date").size().reset_index(name="Total Attendance")
-                st.line_chart(date_counts.set_index("Date"), use_container_width=True)
-
-                st.divider()
-
-                st.subheader("📚 Attendance by Lab Subject")
-                lab_counts = att_df.groupby("Lab").size().reset_index(name="Total Attendance")
-                st.bar_chart(lab_counts.set_index("Lab"), use_container_width=True)
-            else:
-                st.info("No attendance records found yet.")
-
-        # ==================== TAB 3: MANAGE RECORDS (Delete etc.) ====================
-        with tabs[3]:
-            st.header("🗑️ Manage Attendance Records")
-            st.markdown("<div class='section-note'>View, search, and delete attendance records. Use with caution — deletions are permanent.</div>", unsafe_allow_html=True)
-
-            att_df_manage = load_data()
-            if att_df_manage.empty:
-                st.info("No attendance records found.")
-            else:
-                manage_date = st.date_input("Select Date", value=datetime.now().date(), key="admin_manage_date")
-                manage_date_str = manage_date.strftime("%Y-%m-%d")
-                day_records = att_df_manage[att_df_manage["Date"] == manage_date_str]
-
-                if day_records.empty:
-                    st.info(f"No records for {manage_date.strftime('%B %d, %Y')}.")
-                else:
-                    st.dataframe(day_records, use_container_width=True, hide_index=True)
-
-                    st.subheader("Delete Individual Record")
-                    rec_options = day_records.apply(lambda r: f"{r['Roll Number']} — {r['Lab']} — {r['Time']}", axis=1).tolist()
-                    rec_indices = day_records.index.tolist()
-                    rec_map = dict(zip(rec_options, rec_indices))
-                    rec_to_del = st.selectbox("Select record:", ["-- Select --"] + rec_options, key="admin_del_rec")
-                    if rec_to_del != "-- Select --":
-                        if st.button("🗑️ Delete Record", type="primary", key="admin_del_rec_btn"):
-                            sel_rec = day_records.loc[rec_map[rec_to_del]]
-                            with get_db_connection() as conn:
-                                conn.execute(
-                                    "DELETE FROM attendance WHERE roll_number = ? AND date = ? AND time = ? AND lab = ?",
-                                    (str(sel_rec["Roll Number"]), str(sel_rec["Date"]), str(sel_rec["Time"]), str(sel_rec["Lab"]))
-                                )
-                                conn.commit()
-                            st.success(f"✅ Deleted: {rec_to_del}")
+                        is_selected = (st.session_state.selected_subject == sub)
+                        btn_label = f"✅  {sub}" if is_selected else f"📄  {sub}"
+                        if st.button(
+                            btn_label, 
+                            key=f"btn_sel_{yr}_{sem}_{sub}", 
+                            use_container_width=True, 
+                            type="primary" if is_selected else "secondary"
+                        ):
+                            st.session_state.selected_subject = sub
                             st.rerun()
 
-                    st.divider()
-                    if st.button(f"🗑️ Delete ALL records for {manage_date.strftime('%b %d, %Y')}", key="admin_del_day_btn"):
-                        with get_db_connection() as conn:
-                            conn.execute("DELETE FROM attendance WHERE date = ?", (manage_date_str,))
-                            conn.commit()
-                        st.success(f"✅ Deleted all records for {manage_date.strftime('%b %d, %Y')}")
-                        st.rerun()
-
-        st.stop()
+    lab_choice = st.session_state.selected_subject
+    st.markdown("<div class='section-note'>Select the correct lab subject first, then use your face or QR Code to verify and mark attendance.</div>", unsafe_allow_html=True)
     
-    with tabs[0]:
-        st.header("👤 Face & QR Scanner Attendance")
-        # Initialize selected_subject in session state if not already set
-        if 'selected_subject' not in st.session_state:
-            st.session_state.selected_subject = "C Programing"
-
-        # Define subjects hierarchy
-        subjects_by_year_sem = {
-            "1st Year": {
-                "1st Sem": ["C Programing", "DigitalLogics",],
-                "2nd Sem": ["Cpp", "DataStructure"]
-            },
-            "2nd Year": {
-                "3rd Sem": ["DBMS", "JAVA", "WebDesigen"],
-                "4th Sem": ["Python", "Operating System", "Computer Graphics"]
-            },
-            "3rd Year": {
-                "5th Sem": ["PHP","DAA","C#",],
-                "6th Sem": ["AIML"]
-            }
-        }
-
-        st.markdown('<div class="subject-selection-marker"></div>', unsafe_allow_html=True)
-
-        # Dynamic accordion: expand only the year that contains the selected subject
-        active_year = "1st Year"
-        for yr, sems in subjects_by_year_sem.items():
-            for sem, subs in sems.items():
-                if st.session_state.selected_subject in subs:
-                    active_year = yr
-
-        for yr in ["1st Year", "2nd Year", "3rd Year"]:
-            is_expanded = (yr == active_year)
-            with st.expander(f"📅 {yr}", expanded=is_expanded):
-                sems = list(subjects_by_year_sem[yr].keys())
-                sem_cols = st.columns(len(sems))
-                for s_idx, sem in enumerate(sems):
-                    with sem_cols[s_idx]:
-                        st.markdown(f"<div style='font-size: 0.95rem; color: #222222; margin-top: 4px; margin-bottom: 8px; font-weight: 600;'>{sem}</div>", unsafe_allow_html=True)
-                        subs = subjects_by_year_sem[yr][sem]
-                        for sub in subs:
-                            if not sub:
-                                st.markdown("<p style='color:#888;margin:0;font-size:0.875rem;'>No subjects added yet</p>", unsafe_allow_html=True)
-                                continue
-                            is_selected = (st.session_state.selected_subject == sub)
-                            btn_label = f"✅  {sub}" if is_selected else f"📄  {sub}"
-                            if st.button(
-                                btn_label, 
-                                key=f"btn_sel_{yr}_{sem}_{sub}", 
-                                use_container_width=True, 
-                                type="primary" if is_selected else "secondary"
-                            ):
-                                st.session_state.selected_subject = sub
-                                st.rerun()
-
-        lab_choice = st.session_state.selected_subject
-        st.markdown("<div class='section-note'>Select the correct lab subject first, then use your face or QR Code to verify and mark attendance.</div>", unsafe_allow_html=True)
+    st.divider()
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        method = st.radio("Verification Method:", ["Face Recognition", "QR Code Scanner"], horizontal=True, key="attendance_method_radio")
         
-        st.divider()
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            method = st.radio("Verification Method:", ["Face Recognition", "QR Code Scanner"], horizontal=True, key="attendance_method_radio")
-            
-            if method == "Face Recognition":
-                st.subheader("👤 Live Secure Face Attendance")
-                if not FACE_RECOGNITION_AVAILABLE:
-                    st.warning("⚠️ Face recognition is not available. Please install 'mediapipe' library or use QR Code mode.")
-                else:
-                    st.markdown("""
-                    <div class='section-note' style='border-left-color: #10b981; background: rgba(16, 185, 129, 0.05); margin-bottom: 15px; padding: 12px 16px; border-radius: 8px;'>
-                        <strong>👁️ Live Blink Liveness Check:</strong><br>
-                        Position your face in the camera and <strong>blink</strong> to prove you are a real person.<br>
-                        The system will automatically scan your face and mark attendance once verified.
-                    </div>
-                    """, unsafe_allow_html=True)
+        if method == "Face Recognition":
+            st.subheader("👤 Live Secure Face Attendance")
+            if not FACE_RECOGNITION_AVAILABLE:
+                st.warning("⚠️ Face recognition is not available. Please install 'mediapipe' library or use QR Code mode.")
+            else:
+                st.markdown("""
+                <div class='section-note' style='border-left-color: #10b981; background: rgba(16, 185, 129, 0.05); margin-bottom: 15px; padding: 12px 16px; border-radius: 8px;'>
+                    <strong>👁️ Live Blink Liveness Check:</strong><br>
+                    Position your face in the camera and <strong>blink</strong> to prove you are a real person.<br>
+                    The system will automatically scan your face and mark attendance once verified.
+                </div>
+                """, unsafe_allow_html=True)
 
-                    class LiveFaceProcessor(VideoProcessorBase):
-                        def __init__(self):
-                            self.matched_roll = None
-                            self.ear_history = []
-                            self.liveness_verified = False
-                            self.detector = None
-                            self.recognizer = None
-                            self.face_landmarker = None
-                            self.known_encodings = []
-                            self.known_rolls = []
-                            self.initialized = False
-                            self.last_w = 0
-                            self.last_h = 0
+                class LiveFaceProcessor(VideoProcessorBase):
+                    def __init__(self):
+                        self.target_roll = st.session_state.get("student_roll") if st.session_state.get("user_role") == "student" and st.session_state.get("student_roll") else None
+                        self.target_encoding = None
+                        self.matched_roll = None
+                        self.ear_history = []
+                        self.liveness_verified = False
+                        self.detector = None
+                        self.recognizer = None
+                        self.face_landmarker = None
+                        self.known_encodings = []
+                        self.known_rolls = []
+                        self.initialized = False
+                        self.last_w = 0
+                        self.last_h = 0
 
-                        def _initialize(self):
-                            if not ensure_models_cached():
-                                return False
-                            self.recognizer = get_face_recognizer()
-                            import mediapipe as mp
-                            BaseOptions = mp.tasks.BaseOptions
-                            FaceLandmarker = mp.tasks.vision.FaceLandmarker
-                            FaceLandmarkerOptions = mp.tasks.vision.FaceLandmarkerOptions
-                            VisionRunningMode = mp.tasks.vision.RunningMode
-                            landmarker_options = FaceLandmarkerOptions(
-                                base_options=BaseOptions(model_asset_path=FACE_LANDMARKER_PATH),
-                                running_mode=VisionRunningMode.IMAGE,
-                                num_faces=1,
-                                min_face_detection_confidence=0.5,
-                                min_face_presence_confidence=0.5,
-                            )
-                            self.face_landmarker = FaceLandmarker.create_from_options(landmarker_options)
+                    def _initialize(self):
+                        if not ensure_models_cached():
+                            return False
+                        self.recognizer = get_face_recognizer()
+                        import mediapipe as mp
+                        BaseOptions = mp.tasks.BaseOptions
+                        FaceLandmarker = mp.tasks.vision.FaceLandmarker
+                        FaceLandmarkerOptions = mp.tasks.vision.FaceLandmarkerOptions
+                        VisionRunningMode = mp.tasks.vision.RunningMode
+                        landmarker_options = FaceLandmarkerOptions(
+                            base_options=BaseOptions(model_asset_path=FACE_LANDMARKER_PATH),
+                            running_mode=VisionRunningMode.IMAGE,
+                            num_faces=1,
+                            min_face_detection_confidence=0.5,
+                            min_face_presence_confidence=0.5,
+                        )
+                        self.face_landmarker = FaceLandmarker.create_from_options(landmarker_options)
+                        
+                        if self.target_roll:
+                            details = get_student_face_details(self.target_roll)
+                            if details and details["has_face"]:
+                                self.target_encoding = details["face_encoding"]
+                        else:
                             self.known_encodings, self.known_rolls = _load_cached_embeddings()
-                            self.initialized = True
-                            return True
 
-                        def recv(self, frame):
-                            img = frame.to_ndarray(format="bgr24")
-                            if not self.initialized:
-                                if not self._initialize():
-                                    return av.VideoFrame.from_ndarray(img, format="bgr24")
+                        self.initialized = True
+                        return True
 
-                            # If already matched in this session, show success message
-                            if self.matched_roll:
-                                cv2.putText(img, f"Success! Marked {self.matched_roll}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                    def recv(self, frame):
+                        img = frame.to_ndarray(format="bgr24")
+                        if not self.initialized:
+                            if not self._initialize():
                                 return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-                            h, w = img.shape[:2]
-                            if self.detector is None or w != self.last_w or h != self.last_h:
-                                self.detector = get_face_detector(w, h)
-                                self.last_w = w
-                                self.last_h = h
+                        # If already matched in this session, show success message
+                        if self.matched_roll:
+                            cv2.putText(img, f"Success! Marked {self.matched_roll}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                            return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-                            # 1. Liveness check via MediaPipe
-                            rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                            import mediapipe as mp
-                            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_img)
-                            results = self.face_landmarker.detect(mp_image)
+                        h, w = img.shape[:2]
+                        if self.detector is None or w != self.last_w or h != self.last_h:
+                            self.detector = get_face_detector(w, h)
+                            self.last_w = w
+                            self.last_h = h
 
-                            ear = None
-                            if results.face_landmarks:
-                                face_lm = results.face_landmarks[0]
-                                landmarks = get_landmarks_from_mediapipe(face_lm, w, h)
-                                ear_l = calculate_ear(landmarks["left_eye"])
-                                ear_r = calculate_ear(landmarks["right_eye"])
-                                ear = (ear_l + ear_r) / 2.0
+                        # 1. Liveness check via MediaPipe
+                        rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                        import mediapipe as mp
+                        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_img)
+                        results = self.face_landmarker.detect(mp_image)
+
+                        ear = None
+                        if results.face_landmarks:
+                            face_lm = results.face_landmarks[0]
+                            landmarks = get_landmarks_from_mediapipe(face_lm, w, h)
+                            ear_l = calculate_ear(landmarks["left_eye"])
+                            ear_r = calculate_ear(landmarks["right_eye"])
+                            ear = (ear_l + ear_r) / 2.0
+                            
+                            # Draw eyes
+                            for pt in landmarks["left_eye"] + landmarks["right_eye"]:
+                                cv2.circle(img, pt, 2, (0, 255, 0), -1)
+
+                            self.ear_history.append(ear)
+                            if len(self.ear_history) > 15:
+                                self.ear_history.pop(0)
+
+                            # Detect blink (a sudden drop in EAR)
+                            if len(self.ear_history) >= 10:
+                                max_ear = max(self.ear_history)
+                                min_ear = min(self.ear_history)
+                                # Typical blink: open > 0.20, closed < 0.16
+                                if max_ear > 0.20 and min_ear < 0.16:
+                                    self.liveness_verified = True
+
+                        status_color = (0, 255, 255) if not self.liveness_verified else (0, 255, 0)
+                        status_text = "Blink to verify liveness..." if not self.liveness_verified else "Live person verified!"
+                        cv2.putText(img, status_text, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
+                        if ear:
+                            cv2.putText(img, f"EAR: {ear:.3f}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2)
+
+                        # 2. Face Recognition
+                        if self.liveness_verified:
+                            _, faces = self.detector.detect(img)
+                            if faces is not None and len(faces) > 0:
+                                face = faces[0]
+                                aligned_face = self.recognizer.alignCrop(img, face)
+                                face_emb = self.recognizer.feature(aligned_face)
                                 
-                                # Draw eyes
-                                for pt in landmarks["left_eye"] + landmarks["right_eye"]:
-                                    cv2.circle(img, pt, 2, (0, 255, 0), -1)
-
-                                self.ear_history.append(ear)
-                                if len(self.ear_history) > 15:
-                                    self.ear_history.pop(0)
-
-                                # Detect blink (a sudden drop in EAR)
-                                if len(self.ear_history) >= 10:
-                                    max_ear = max(self.ear_history)
-                                    min_ear = min(self.ear_history)
-                                    # Typical blink: open > 0.20, closed < 0.16
-                                    if max_ear > 0.20 and min_ear < 0.16:
-                                        self.liveness_verified = True
-
-                            status_color = (0, 255, 255) if not self.liveness_verified else (0, 255, 0)
-                            status_text = "Blink to verify liveness..." if not self.liveness_verified else "Live person verified!"
-                            cv2.putText(img, status_text, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
-                            if ear:
-                                cv2.putText(img, f"EAR: {ear:.3f}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2)
-
-                            # 2. Face Recognition
-                            if self.liveness_verified:
-                                _, faces = self.detector.detect(img)
-                                if faces is not None and len(faces) > 0:
-                                    face = faces[0]
-                                    aligned_face = self.recognizer.alignCrop(img, face)
-                                    face_emb = self.recognizer.feature(aligned_face)
-                                    
+                                if self.target_roll:
+                                    # Fast 1-to-1 face verification
+                                    if self.target_encoding is None:
+                                        cv2.putText(img, f"No face registered for {self.target_roll}", (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                                    else:
+                                        is_match, score = compare_face_embeddings(self.target_encoding, face_emb, threshold=0.363)
+                                        if is_match:
+                                            self.matched_roll = self.target_roll
+                                            cv2.putText(img, f"Verified: {self.target_roll} ({score:.2f})", (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                                            box = face[0:4].astype(int)
+                                            cv2.rectangle(img, (box[0], box[1]), (box[0]+box[2], box[1]+box[3]), (0, 255, 0), 2)
+                                        else:
+                                            cv2.putText(img, f"Face mismatch for {self.target_roll}", (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                                else:
+                                    # 1-to-N fallback loop
                                     best_score = -1.0
                                     best_idx = -1
                                     for i, known_enc in enumerate(self.known_encodings):
@@ -1778,147 +1958,415 @@ else:
                                     if best_idx >= 0:
                                         self.matched_roll = self.known_rolls[best_idx]
                                         cv2.putText(img, f"Recognized: {self.matched_roll}", (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                                        
-                                        # Draw bounding box
                                         box = face[0:4].astype(int)
                                         cv2.rectangle(img, (box[0], box[1]), (box[0]+box[2], box[1]+box[3]), (0, 255, 0), 2)
                                     else:
                                         cv2.putText(img, "Recognizing... No match", (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
-                            return av.VideoFrame.from_ndarray(img, format="bgr24")
+                        return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-                    webrtc_ctx = webrtc_streamer(
-                        key="live-face-scanner",
-                        mode=WebRtcMode.SENDRECV,
-                        video_processor_factory=LiveFaceProcessor,
-                        media_stream_constraints={"video": True, "audio": False},
-                        async_processing=True,
-                    )
+                webrtc_ctx = webrtc_streamer(
+                    key="live-face-scanner",
+                    mode=WebRtcMode.SENDRECV,
+                    video_processor_factory=LiveFaceProcessor,
+                    media_stream_constraints={"video": True, "audio": False},
+                    async_processing=True,
+                )
 
-                    if webrtc_ctx.state.playing:
-                        if webrtc_ctx.video_processor:
-                            if webrtc_ctx.video_processor.matched_roll:
-                                roll = webrtc_ctx.video_processor.matched_roll
-                                success, msg = mark_attendance(roll, lab_choice)
-                                if success:
-                                    play_siri_voice(True, roll)
-                                    st.balloons()
-                                    show_scan_popup(True, msg, roll)
-                                else:
-                                    play_siri_voice(False, roll)
-                                    show_scan_popup(False, msg, roll)
-                                webrtc_ctx.video_processor.matched_roll = None  # Reset to prevent continuous triggers
-                                st.rerun()
+                if webrtc_ctx.state.playing:
+                    if webrtc_ctx.video_processor:
+                        if webrtc_ctx.video_processor.matched_roll:
+                            roll = webrtc_ctx.video_processor.matched_roll
+                            success, msg = mark_attendance(roll, lab_choice)
+                            if success:
+                                play_siri_voice(True, roll)
+                                st.balloons()
+                                show_scan_popup(True, msg, roll)
                             else:
-                                import time
-                                time.sleep(1.0)
-                                st.rerun()
+                                play_siri_voice(False, roll)
+                                show_scan_popup(False, msg, roll)
+                            webrtc_ctx.video_processor.matched_roll = None  # Reset to prevent continuous triggers
+                            st.rerun()
+                        else:
+                            import time
+                            time.sleep(1.0)
+                            st.rerun()
                             
-            else:
-                st.subheader("📷 QR Code Scanner")
-                st.write("Use your device camera to scan a QR Code for attendance marking.")
+        else:
+            st.subheader("📷 QR Code Scanner")
+            st.write("Use your device camera to scan a QR Code for attendance marking.")
 
-                st.markdown("**📸 Capture QR Code from Camera:**")
-                qr_camera = st.camera_input("Point your camera at the QR Code and capture:", key="qr_camera_input")
+            st.markdown("**📸 Capture QR Code from Camera:**")
+            qr_camera = st.camera_input("Point your camera at the QR Code and capture:", key="qr_camera_input")
+            
+            st.markdown("**--- or ---**")
+            st.markdown("**📁 Upload QR Code image:**")
+            qr_file = st.file_uploader("Upload QR Code image:", type=["png", "jpg", "jpeg"], key="qr_file_uploader")
+            
+            scanned_file = qr_camera or qr_file
+            if scanned_file is not None:
+                # Try scanning with both QR methods
+                roll_number, err = scan_qr_from_image(scanned_file)
+                if roll_number is None:
+                    # Fallback to decode_qr_code
+                    scanned_file.seek(0)
+                    roll_number, err = decode_qr_code(scanned_file)
                 
-                st.markdown("**--- or ---**")
-                st.markdown("**📁 Upload QR Code image:**")
-                qr_file = st.file_uploader("Upload QR Code image:", type=["png", "jpg", "jpeg"], key="qr_file_uploader")
-                
-                scanned_file = qr_camera or qr_file
-                if scanned_file is not None:
-                    # Try scanning with both QR methods
-                    roll_number, err = scan_qr_from_image(scanned_file)
-                    if roll_number is None:
-                        # Fallback to decode_qr_code
-                        scanned_file.seek(0)
-                        roll_number, err = decode_qr_code(scanned_file)
-                    
-                    if roll_number:
-                        registry = load_student_registry()
-                        registered_rolls = registry["Roll Number"].astype(str).tolist()
-                        if not registered_rolls or roll_number in registered_rolls:
-                            success, msg = mark_attendance(roll_number, lab_choice)
-                        else:
-                            success = False
-                            msg = f"Student '{roll_number}' is not registered in the student database. Register them first."
-                        if success:
-                            play_siri_voice(True, roll_number)
-                            st.balloons()
-                            show_scan_popup(True, msg, roll_number)
-                        else:
-                            play_siri_voice(False, roll_number)
-                            show_scan_popup(False, msg, roll_number)
-                    else:
-                        st.error(f"QR Decoding failed: {err}")
-                        
-        with col2:
-            st.subheader("Manual Attendance (Faculty Bypass)")
-            if st.session_state.user_role == "student":
-                roll_input = st.text_input("Your Roll Number:", value=st.session_state.username, disabled=True, key="manual_roll")
-            else:
-                roll_input = st.text_input("Enter Roll Number Manually:", key="manual_roll")
-                
-            if st.button("Submit Manual Entry", key="manual_mark"):
-                roll_strip = roll_input.strip()
-                if roll_strip:
+                if roll_number:
                     registry = load_student_registry()
                     registered_rolls = registry["Roll Number"].astype(str).tolist()
-                    
-                    if not registered_rolls or roll_strip in registered_rolls:
-                        success, msg = mark_attendance(roll_strip, lab_choice)
+                    if not registered_rolls or roll_number in registered_rolls:
+                        success, msg = mark_attendance(roll_number, lab_choice)
                     else:
                         success = False
-                        msg = f"Roll Number '{roll_strip}' is not registered in the student database. Register them first."
-                    
+                        msg = f"Student '{roll_number}' is not registered in the student database. Register them first."
                     if success:
-                        play_siri_voice(True, roll_strip)
+                        play_siri_voice(True, roll_number)
                         st.balloons()
-                        show_scan_popup(True, msg, roll_strip)
+                        show_scan_popup(True, msg, roll_number)
                     else:
-                        play_siri_voice(False, roll_strip)
-                        show_scan_popup(False, msg, roll_strip)
+                        play_siri_voice(False, roll_number)
+                        show_scan_popup(False, msg, roll_number)
                 else:
-                    st.warning("Please enter a roll number.")
+                    st.error(f"QR Decoding failed: {err}")
                     
-        render_popup()
+    with col2:
+        st.subheader("Manual Attendance (Faculty Bypass)")
+        if st.session_state.user_role == "student":
+            roll_input = st.text_input("Your Roll Number:", value=st.session_state.student_roll if st.session_state.student_roll else st.session_state.username, disabled=True, key="manual_roll")
+        else:
+            roll_input = st.text_input("Enter Roll Number Manually:", key="manual_roll")
+            
+        if st.button("Submit Manual Entry", key="manual_mark"):
+            roll_strip = roll_input.strip()
+            if roll_strip:
+                registry = load_student_registry()
+                registered_rolls = registry["Roll Number"].astype(str).tolist()
+                
+                if not registered_rolls or roll_strip in registered_rolls:
+                    success, msg = mark_attendance(roll_strip, lab_choice)
+                else:
+                    success = False
+                    msg = f"Roll Number '{roll_strip}' is not registered in the student database. Register them first."
+                
+                if success:
+                    play_siri_voice(True, roll_strip)
+                    st.balloons()
+                    show_scan_popup(True, msg, roll_strip)
+                else:
+                    play_siri_voice(False, roll_strip)
+                    show_scan_popup(False, msg, roll_strip)
+            else:
+                st.warning("Please enter a roll number.")
+                
+    render_popup()
  
-    if st.session_state.user_role == "student":
-        with tabs[1]:
-            st.header("👤 Register My Face")
-            st.write("Capture or upload a photo of your face to register in the student database.")
+if st.session_state.user_role == "student":
+    with tabs[1]:
+        st.header("📅 My Daily Attendance Records")
+        current_student = st.session_state.get("student_roll", "")
+        if current_student:
+            st.markdown(f"<div class='section-note'>Viewing daily subject-wise attendance history for Student Roll Number: <strong>{current_student}</strong>.</div>", unsafe_allow_html=True)
+            daily_df, summary = get_student_daily_records(current_student)
             
-            student_roll = st.text_input("Confirm Your Roll Number:", value=st.session_state.username if st.session_state.username != "Student" else "", key="student_roll_face_reg")
+            m_col1, m_col2, m_col3 = st.columns(3)
+            m_col1.metric("Total Days Attended", summary.get("total_days_attended", 0))
+            m_col2.metric("Total Sessions Marked", summary.get("total_sessions", 0))
+            m_col3.metric("Distinct Subjects", summary.get("unique_labs", 0))
             
-            st.write("Capture Face:")
-            std_face_cam = st.camera_input("Capture snapshot", key="student_face_cam")
-            st.write("--- or ---")
-            std_face_upload = st.file_uploader("Upload photo of your face:", type=["png", "jpg", "jpeg"], key="student_face_upload")
-            
-            std_face_img = std_face_cam or std_face_upload
-            
-            if st.button("Register My Face", type="primary", key="student_register_face_btn"):
-                roll_clean = student_roll.strip()
-                if not roll_clean:
-                    st.warning("Please confirm your Roll Number.")
-                elif std_face_img is None:
-                    st.warning("Please capture or upload a face picture.")
+            st.divider()
+            if not daily_df.empty:
+                st.dataframe(daily_df, use_container_width=True)
+            else:
+                st.info("No attendance records found for your roll number yet.")
+        else:
+            st.warning("⚠️ Please sign in with your Roll Number above to view your daily attendance history.")
+
+    with tabs[2]:
+        st.header("👤 Register My Face")
+        st.write("Capture or upload a photo of your face to register in the student database.")
+        
+        default_roll = st.session_state.get("student_roll", "")
+        student_roll = st.text_input("Confirm / Enter Roll Number:", value=default_roll, key="student_roll_face_reg")
+        
+        st.write("Capture Face:")
+        std_face_cam = st.camera_input("Capture snapshot", key="student_face_cam")
+        st.write("--- or ---")
+        std_face_upload = st.file_uploader("Upload photo of your face:", type=["png", "jpg", "jpeg"], key="student_face_upload")
+        
+        std_face_img = std_face_cam or std_face_upload
+        
+        if st.button("Register My Face", type="primary", key="student_register_face_btn"):
+            roll_clean = student_roll.strip()
+            if not roll_clean:
+                st.warning("Please confirm your Roll Number.")
+            elif std_face_img is None:
+                st.warning("Please capture or upload a face picture.")
+            else:
+                success, msg = enroll_student(roll_clean, std_face_img)
+                if success:
+                    st.session_state.student_roll = roll_clean
+                    st.session_state.username = roll_clean
+                    st.success(msg)
+                    st.balloons()
+                    time.sleep(1.0)
+                    st.rerun()
                 else:
-                    success, msg = enroll_student(roll_clean, std_face_img)
-                    if success:
-                        st.success(msg)
-                        st.balloons()
-                    else:
-                        st.error(msg)
-                        
-        with tabs[2]:
-            st.header("📇 Get My QR Code")
-            st.write("Generate and download your personalized attendance QR Code.")
+                    st.error(msg)
+                    
+    with tabs[3]:
+        st.header("📇 Get My QR Code")
+        st.write("Generate and download your personalized attendance QR Code.")
+        
+        default_roll_qr = st.session_state.get("student_roll", "")
+        student_roll = st.text_input("Enter your Roll Number:", value=default_roll_qr, placeholder="e.g. U16VH24S0208", key="student_roll_qr")
+        if st.button("Generate My QR Code", type="primary", key="student_gen_qr_btn"):
+            roll_clean = student_roll.strip()
+            if roll_clean:
+                qr_img = generate_qr_code_image(roll_clean)
+                buf = BytesIO()
+                qr_img.save(buf, format="PNG")
+                byte_im = buf.getvalue()
+                
+                st.image(byte_im, width=200, caption=f"QR Code for {roll_clean}")
+                st.download_button(
+                    label="Download QR Code",
+                    data=byte_im,
+                    file_name=f"{roll_clean}_qrcode.png",
+                    mime="image/png",
+                    key=f"dl_student_{roll_clean}"
+                )
+            else:
+                st.warning("Please enter a valid Roll Number.")
+                
+        st.divider()
+        st.subheader("How to use Face & QR Code Attendance")
+        st.markdown("""
+        - **Sign In with Roll Number**: Log into the student portal using your roll number.
+        - **Register Face**: Navigate to the `Register My Face` tab and capture your face photo.
+        - **Fast 1-to-1 Matching**: Attendance scanning compares live camera feed strictly against your registered face for high speed and accuracy.
+        """)
+else:
+    with tabs[1]:
+        st.header("Attendance Records")
+        df = load_data()
+    
+    st.markdown("<div class='section-note'>Search and filter attendance entries with ease. Download the current view or remove outdated entries safely.</div>", unsafe_allow_html=True)
+    
+    # Date picker for filtering
+    col_date, col_filter = st.columns([1, 1])
+    with col_date:
+        selected_date = st.date_input(
+            "Select Date to View Records",
+            value=datetime.now().date(),
+            help="Choose a date to view attendance records for that specific day"
+        )
+    
+    with col_filter:
+        filter_lab = st.selectbox("Filter by Subject", ["All", "Python", "Operating System", "Computer Graphics", "DataStructure", "Cpp", "DBMS", "DigitalLogics", "JAVA", "WebDesigen", "C Programing", "DAA", "C#", "PHP", "AIML"])
+    
+    # Convert selected_date to string format for comparison
+    selected_date_str = selected_date.strftime("%Y-%m-%d")
+        
+    # Filter data by selected date
+    date_filtered_df = df[df["Date"] == selected_date_str]
+    
+    # Apply subject filter if needed
+    if filter_lab != "All":
+        display_df = date_filtered_df[date_filtered_df["Lab"] == filter_lab]
+    else:
+        display_df = date_filtered_df
+    
+    display_df = display_df.copy()
+    display_df["Lab"] = display_df["Lab"].apply(lambda x: x + " (2nd sem)" if x in ["DataStructure", "Cpp"] else x)
+    
+    st.subheader(f"📅 Records for {selected_date.strftime('%B %d, %Y')} ({len(display_df)} total records)")
+    
+    # Download button for filtered data
+    csv = display_df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        "Download Filtered Records as CSV",
+        csv,
+        f"attendance_records_{selected_date_str}.csv",
+        "text/csv",
+        key='download-csv-filtered'
+    )
+    
+    st.divider()
+    
+    # Display records organized by subject
+    if not display_df.empty:
+        # Group by subject and show each subject's records
+        subjects = sorted(display_df["Lab"].unique())
+        
+        for subject in subjects:
+            subject_records = display_df[display_df["Lab"] == subject].sort_values("Time", ascending=False)
+            with st.expander(f"📚 {subject} ({len(subject_records)} students)", expanded=True):
+                st.dataframe(
+                    subject_records[["Roll Number", "Time", "Lab"]], 
+                    width='stretch', 
+                    hide_index=True,
+                    column_config={
+                        "Roll Number": st.column_config.TextColumn("Student Roll Number", width="medium"),
+                        "Time": st.column_config.TextColumn("Attendance Time", width="medium"),
+                        "Lab": st.column_config.TextColumn("Subject", width="medium")
+                    }
+                )
+                
+                # Summary stats for this subject
+                col_stats1, col_stats2 = st.columns(2)
+                with col_stats1:
+                    st.metric("Total Students", len(subject_records))
+                with col_stats2:
+                    # Check if it's Friday/Saturday for max attendance info
+                    day_of_week = selected_date.weekday()
+                    max_allowed = 2 if day_of_week in [4, 5] else 1
+                    st.metric("Max Allowed per Student", max_allowed)
+                
+                st.subheader("Delete Record")
+                options = subject_records.apply(lambda row: f"{row['Roll Number']} - {row['Time']}", axis=1).tolist()
+                indices = subject_records.index.tolist()
+                option_to_index = dict(zip(options, indices))
+                
+                record_to_delete = st.selectbox(
+                    f"Select record to delete for {subject}:", 
+                    ["-- Select --"] + options, 
+                    key=f"delete_select_{subject}_{selected_date_str}"
+                )
+                
+                if record_to_delete != "-- Select --":
+                    if st.button("Delete Selected Record", type="primary", key=f"delete_btn_{subject}_{selected_date_str}"):
+                        idx_to_drop = option_to_index[record_to_delete]
+                        sel_rec = df.loc[idx_to_drop]
+                        with get_db_connection() as conn:
+                            conn.execute(
+                                "DELETE FROM attendance WHERE roll_number = ? AND date = ? AND time = ? AND lab = ?",
+                                (str(sel_rec["Roll Number"]), str(sel_rec["Date"]), str(sel_rec["Time"]), str(sel_rec["Lab"]))
+                            )
+                            conn.commit()
+                        st.toast(f"✅ Deleted record for {record_to_delete.split(' - ')[0]}")
+                        st.rerun()
+        
+        st.divider()
+        st.subheader("Delete Records")
+        st.write("Use these buttons to remove records for the selected date or the entire attendance history.")
+        delete_date_button, delete_all_button = st.columns(2)
+        with delete_date_button:
+            if st.button(f"Delete all records for {selected_date.strftime('%b %d, %Y')}", key=f"delete_date_{selected_date_str}"):
+                with get_db_connection() as conn:
+                    conn.execute("DELETE FROM attendance WHERE date = ?", (selected_date_str,))
+                    conn.commit()
+                st.success(f"✅ Deleted all records for {selected_date.strftime('%b %d, %Y')}")
+                st.rerun()
+        with delete_all_button:
+            confirm_delete_all = st.checkbox(
+                "I understand this will permanently delete all attendance history.",
+                key="confirm_delete_all_history"
+            )
+            if confirm_delete_all:
+                delete_all_text = st.text_input(
+                    "Type DELETE to confirm full attendance history deletion:",
+                    key="confirm_delete_all_text"
+                )
+                if delete_all_text.strip().upper() == "DELETE":
+                    if st.button("Delete all attendance history", key="delete_all_history"):
+                        with get_db_connection() as conn:
+                            conn.execute("DELETE FROM attendance")
+                            conn.commit()
+                        st.success("✅ Deleted all attendance records")
+                        st.rerun()
+                else:
+                    st.warning("Type DELETE exactly to enable the delete button.")
+            else:
+                st.info("Check the box above to enable full history deletion.")
+        
+        # Overall summary for the selected date
+        st.divider()
+        st.subheader("📊 Daily Summary")
+        col_sum1, col_sum2, col_sum3 = st.columns(3)
+        
+        total_students = len(display_df["Roll Number"].unique())
+        total_records = len(display_df)
+        day_name = selected_date.strftime("%A")
+        
+        with col_sum1:
+            st.metric("Total Students", total_students)
+        with col_sum2:
+            st.metric("Total Records", total_records)
+        with col_sum3:
+            st.metric("Day", day_name)
             
-            student_roll = st.text_input("Enter your Roll Number:", placeholder="e.g. U16VH24S0208", key="student_roll_qr")
-            if st.button("Generate My QR Code", type="primary", key="student_gen_qr_btn"):
-                roll_clean = student_roll.strip()
-                if roll_clean:
+    else:
+        st.info(f"📭 No attendance records found for {selected_date.strftime('%B %d, %Y')}.")
+        
+        # Show available dates with records
+        available_dates = sorted(df["Date"].unique(), reverse=True)
+        if available_dates:
+            st.write("**Available dates with records:**")
+            date_options = [datetime.strptime(date, "%Y-%m-%d").strftime("%B %d, %Y (%A)") for date in available_dates[:10]]  # Show last 10 dates
+            st.write(", ".join(date_options))
+    
+    # Option to view all records (original functionality)
+    st.divider()
+    with st.expander("📋 View All Records (Historical View)", expanded=False):
+        st.markdown("### Complete Attendance History")
+        
+        filter_lab_all = st.selectbox("Filter by Subject (All Records)", ["All", "Python", "Operating System", "Computer Graphics", "DataStructure", "Cpp", "DBMS", "DigitalLogics", "JAVA", "WebDesigen", "C Programing", "R Programing", "C.prog", "MAD", "WCMS"], key="filter_all")
+        
+        if filter_lab_all != "All":
+            original_display_df = df[df["Lab"] == filter_lab_all]
+        else:
+            original_display_df = df
+            
+        display_df_all = original_display_df.copy()
+        display_df_all["Lab"] = display_df_all["Lab"].apply(lambda x: x + " (2nd sem)" if x in ["DataStructure", "Cpp"] else x)
+        
+        # Download button for all records
+        csv_all = original_display_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            "Download All Records as CSV",
+            csv_all,
+            "all_attendance_records.csv",
+            "text/csv",
+            key='download-csv-all'
+        )
+        
+        # Display all records organized by date
+        if not display_df_all.empty:
+            dates = sorted(display_df_all["Date"].unique(), reverse=True)
+            for date in dates:
+                date_records = display_df_all[display_df_all["Date"] == date].sort_values("Time", ascending=False)
+                with st.expander(f"📅 {date} ({len(date_records)} records)", expanded=False):
+                    st.dataframe(date_records[["Roll Number", "Time", "Lab"]], width='stretch', hide_index=True)
+    
+    with tabs[2]:
+        st.header("🧑‍🎓 Student Face & QR Registry")
+        st.markdown("<div class='section-note'>Register new student Roll Numbers along with their Face photo, list all registered students, and generate/download their personalized QR codes.</div>", unsafe_allow_html=True)
+        
+        st.subheader("Enroll New Student")
+        enroll_roll = st.text_input("Enter Student Roll Number:", key="enroll_roll")
+        
+        fac_image = None
+        if FACE_RECOGNITION_AVAILABLE:
+            st.write("Student Face Photo (Required):")
+            fac_cam = st.camera_input("Capture Student Face", key="fac_enroll_cam")
+            st.write("--- or ---")
+            fac_upload = st.file_uploader("Upload Student Face Photo:", type=["png", "jpg", "jpeg"], key="fac_enroll_upload")
+            fac_image = fac_cam or fac_upload
+
+        if st.button("Register Student & Save Face", type="primary", key="enroll_student_btn"):
+            roll_clean = enroll_roll.strip()
+            if not roll_clean:
+                st.warning("Please enter a valid Roll Number.")
+            elif FACE_RECOGNITION_AVAILABLE and fac_image is None:
+                st.warning("Please capture or upload a face photo for the student.")
+            else:
+                success, message = enroll_student(roll_clean, fac_image)
+                if success:
+                    st.success(message)
+                    st.balloons()
+                    
+                    # Generate and show QR Code
                     qr_img = generate_qr_code_image(roll_clean)
                     buf = BytesIO()
                     qr_img.save(buf, format="PNG")
@@ -1930,387 +2378,143 @@ else:
                         data=byte_im,
                         file_name=f"{roll_clean}_qrcode.png",
                         mime="image/png",
-                        key=f"dl_student_{roll_clean}"
+                        key=f"dl_{roll_clean}"
                     )
                 else:
-                    st.warning("Please enter a valid Roll Number.")
-                    
-            st.divider()
-            st.subheader("How to use Face & QR Code Attendance")
-            st.markdown("""
-            - **Register Face**: Navigate to the `Register My Face` tab and capture/upload your face photo.
-            - **Generate QR Code**: Download your personalized QR code as a secondary verification option.
-            - **Mark Attendance**: Use either Face Recognition or QR Code Scanner to instantly verify your identity and mark attendance.
-            """)
-    else:
-        with tabs[1]:
-            st.header("Attendance Records")
-            df = load_data()
-        
-        st.markdown("<div class='section-note'>Search and filter attendance entries with ease. Download the current view or remove outdated entries safely.</div>", unsafe_allow_html=True)
-        
-        # Date picker for filtering
-        col_date, col_filter = st.columns([1, 1])
-        with col_date:
-            selected_date = st.date_input(
-                "Select Date to View Records",
-                value=datetime.now().date(),
-                help="Choose a date to view attendance records for that specific day"
-            )
-        
-        with col_filter:
-            filter_lab = st.selectbox("Filter by Subject", ["All", "Python", "Operating System", "Computer Graphics", "DataStructure", "Cpp", "DBMS", "DigitalLogics", "JAVA", "WebDesigen", "C Programing", "DAA", "C#", "PHP", "AIML"])
-        
-        # Convert selected_date to string format for comparison
-        selected_date_str = selected_date.strftime("%Y-%m-%d")
-            
-        # Filter data by selected date
-        date_filtered_df = df[df["Date"] == selected_date_str]
-        
-        # Apply subject filter if needed
-        if filter_lab != "All":
-            display_df = date_filtered_df[date_filtered_df["Lab"] == filter_lab]
-        else:
-            display_df = date_filtered_df
-        
-        display_df = display_df.copy()
-        display_df["Lab"] = display_df["Lab"].apply(lambda x: x + " (2nd sem)" if x in ["DataStructure", "Cpp"] else x)
-        
-        st.subheader(f"📅 Records for {selected_date.strftime('%B %d, %Y')} ({len(display_df)} total records)")
-        
-        # Download button for filtered data
-        csv = display_df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            "Download Filtered Records as CSV",
-            csv,
-            f"attendance_records_{selected_date_str}.csv",
-            "text/csv",
-            key='download-csv-filtered'
-        )
+                    st.error(message)
         
         st.divider()
-        
-        # Display records organized by subject
-        if not display_df.empty:
-            # Group by subject and show each subject's records
-            subjects = sorted(display_df["Lab"].unique())
+        st.subheader("Registered Students List")
+        registry_df = load_student_registry()
+        if not registry_df.empty:
+            st.write(f"Total registered students: **{len(registry_df)}**")
             
-            for subject in subjects:
-                subject_records = display_df[display_df["Lab"] == subject].sort_values("Time", ascending=False)
-                with st.expander(f"📚 {subject} ({len(subject_records)} students)", expanded=True):
-                    st.dataframe(
-                        subject_records[["Roll Number", "Time", "Lab"]], 
-                        width='stretch', 
-                        hide_index=True,
-                        column_config={
-                            "Roll Number": st.column_config.TextColumn("Student Roll Number", width="medium"),
-                            "Time": st.column_config.TextColumn("Attendance Time", width="medium"),
-                            "Lab": st.column_config.TextColumn("Subject", width="medium")
-                        }
-                    )
-                    
-                    # Summary stats for this subject
-                    col_stats1, col_stats2 = st.columns(2)
-                    with col_stats1:
-                        st.metric("Total Students", len(subject_records))
-                    with col_stats2:
-                        # Check if it's Friday/Saturday for max attendance info
-                        day_of_week = selected_date.weekday()
-                        max_allowed = 2 if day_of_week in [4, 5] else 1
-                        st.metric("Max Allowed per Student", max_allowed)
-                    
-                    st.subheader("Delete Record")
-                    options = subject_records.apply(lambda row: f"{row['Roll Number']} - {row['Time']}", axis=1).tolist()
-                    indices = subject_records.index.tolist()
-                    option_to_index = dict(zip(options, indices))
-                    
-                    record_to_delete = st.selectbox(
-                        f"Select record to delete for {subject}:", 
-                        ["-- Select --"] + options, 
-                        key=f"delete_select_{subject}_{selected_date_str}"
-                    )
-                    
-                    if record_to_delete != "-- Select --":
-                        if st.button("Delete Selected Record", type="primary", key=f"delete_btn_{subject}_{selected_date_str}"):
-                            idx_to_drop = option_to_index[record_to_delete]
-                            sel_rec = df.loc[idx_to_drop]
-                            with get_db_connection() as conn:
-                                conn.execute(
-                                    "DELETE FROM attendance WHERE roll_number = ? AND date = ? AND time = ? AND lab = ?",
-                                    (str(sel_rec["Roll Number"]), str(sel_rec["Date"]), str(sel_rec["Time"]), str(sel_rec["Lab"]))
-                                )
-                                conn.commit()
-                            st.toast(f"✅ Deleted record for {record_to_delete.split(' - ')[0]}")
-                            st.rerun()
-            
-            st.divider()
-            st.subheader("Delete Records")
-            st.write("Use these buttons to remove records for the selected date or the entire attendance history.")
-            delete_date_button, delete_all_button = st.columns(2)
-            with delete_date_button:
-                if st.button(f"Delete all records for {selected_date.strftime('%b %d, %Y')}", key=f"delete_date_{selected_date_str}"):
-                    with get_db_connection() as conn:
-                        conn.execute("DELETE FROM attendance WHERE date = ?", (selected_date_str,))
-                        conn.commit()
-                    st.success(f"✅ Deleted all records for {selected_date.strftime('%b %d, %Y')}")
-                    st.rerun()
-            with delete_all_button:
-                confirm_delete_all = st.checkbox(
-                    "I understand this will permanently delete all attendance history.",
-                    key="confirm_delete_all_history"
+            display_df = registry_df.copy()
+            if "Face Encoding" in display_df.columns:
+                display_df["Face Registered"] = display_df["Face Encoding"].apply(
+                    lambda x: "🟢 Registered" if isinstance(x, str) and len(x.strip()) > 10 else "🔴 Missing"
                 )
-                if confirm_delete_all:
-                    delete_all_text = st.text_input(
-                        "Type DELETE to confirm full attendance history deletion:",
-                        key="confirm_delete_all_text"
-                    )
-                    if delete_all_text.strip().upper() == "DELETE":
-                        if st.button("Delete all attendance history", key="delete_all_history"):
-                            with get_db_connection() as conn:
-                                conn.execute("DELETE FROM attendance")
-                                conn.commit()
-                            st.success("✅ Deleted all attendance records")
-                            st.rerun()
-                    else:
-                        st.warning("Type DELETE exactly to enable the delete button.")
-                else:
-                    st.info("Check the box above to enable full history deletion.")
+                display_columns = ["Roll Number", "Registration Date", "Face Registered"]
+                if "Face Path" in display_df.columns:
+                    display_columns.append("Face Path")
+                st.dataframe(display_df[display_columns], width='stretch', hide_index=True)
+            else:
+                st.dataframe(display_df, width='stretch', hide_index=True)
             
-            # Overall summary for the selected date
-            st.divider()
-            st.subheader("📊 Daily Summary")
-            col_sum1, col_sum2, col_sum3 = st.columns(3)
-            
-            total_students = len(display_df["Roll Number"].unique())
-            total_records = len(display_df)
-            day_name = selected_date.strftime("%A")
-            
-            with col_sum1:
-                st.metric("Total Students", total_students)
-            with col_sum2:
-                st.metric("Total Records", total_records)
-            with col_sum3:
-                st.metric("Day", day_name)
+            # Individual QR Code dropdown generator
+            st.subheader("View/Download Existing Student QR Code")
+            selected_student = st.selectbox("Select Student:", ["-- Select --"] + registry_df["Roll Number"].astype(str).tolist())
+            if selected_student != "-- Select --":
+                qr_img = generate_qr_code_image(selected_student)
+                buf = BytesIO()
+                qr_img.save(buf, format="PNG")
+                byte_im = buf.getvalue()
                 
+                st.image(byte_im, width=200, caption=f"QR Code for {selected_student}")
+                st.download_button(
+                    label="Download QR Code",
+                    data=byte_im,
+                    file_name=f"{selected_student}_qrcode.png",
+                    mime="image/png",
+                    key=f"dl_existing_{selected_student}"
+                )
         else:
-            st.info(f"📭 No attendance records found for {selected_date.strftime('%B %d, %Y')}.")
-            
-            # Show available dates with records
-            available_dates = sorted(df["Date"].unique(), reverse=True)
-            if available_dates:
-                st.write("**Available dates with records:**")
-                date_options = [datetime.strptime(date, "%Y-%m-%d").strftime("%B %d, %Y (%A)") for date in available_dates[:10]]  # Show last 10 dates
-                st.write(", ".join(date_options))
-        
-        # Option to view all records (original functionality)
+            st.info("No students registered yet. Enroll a student above to get started!")
+
         st.divider()
-        with st.expander("📋 View All Records (Historical View)", expanded=False):
-            st.markdown("### Complete Attendance History")
-            
-            filter_lab_all = st.selectbox("Filter by Subject (All Records)", ["All", "Python", "Operating System", "Computer Graphics", "DataStructure", "Cpp", "DBMS", "DigitalLogics", "JAVA", "WebDesigen", "C Programing", "R Programing", "C.prog", "MAD", "WCMS"], key="filter_all")
-            
-            if filter_lab_all != "All":
-                original_display_df = df[df["Lab"] == filter_lab_all]
+        st.subheader("Generate QR Code from Roll Number")
+        generate_roll = st.text_input("Enter a roll number to generate a QR code", key="faculty_generate_qr_roll", placeholder="e.g. U16VH24S0208")
+        if st.button("Generate QR Code", key="faculty_generate_qr_btn"):
+            if generate_roll.strip():
+                generated_qr_img = generate_qr_code_image(generate_roll.strip())
+                buf = BytesIO()
+                generated_qr_img.save(buf, format="PNG")
+                generated_bytes = buf.getvalue()
+                st.image(generated_bytes, width=240, caption=f"QR Code for {generate_roll.strip()}")
+                st.download_button(
+                    label="Download Generated QR Code",
+                    data=generated_bytes,
+                    file_name=f"{generate_roll.strip()}_qrcode.png",
+                    mime="image/png",
+                    key=f"faculty_download_qr_{generate_roll.strip()}"
+                )
             else:
-                original_display_df = df
-                
-            display_df_all = original_display_df.copy()
-            display_df_all["Lab"] = display_df_all["Lab"].apply(lambda x: x + " (2nd sem)" if x in ["DataStructure", "Cpp"] else x)
-            
-            # Download button for all records
-            csv_all = original_display_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                "Download All Records as CSV",
-                csv_all,
-                "all_attendance_records.csv",
-                "text/csv",
-                key='download-csv-all'
-            )
-            
-            # Display all records organized by date
-            if not display_df_all.empty:
-                dates = sorted(display_df_all["Date"].unique(), reverse=True)
-                for date in dates:
-                    date_records = display_df_all[display_df_all["Date"] == date].sort_values("Time", ascending=False)
-                    with st.expander(f"📅 {date} ({len(date_records)} records)", expanded=False):
-                        st.dataframe(date_records[["Roll Number", "Time", "Lab"]], width='stretch', hide_index=True)
-        
-        with tabs[2]:
-            st.header("🧑‍🎓 Student Face & QR Registry")
-            st.markdown("<div class='section-note'>Register new student Roll Numbers along with their Face photo, list all registered students, and generate/download their personalized QR codes.</div>", unsafe_allow_html=True)
-            
-            st.subheader("Enroll New Student")
-            enroll_roll = st.text_input("Enter Student Roll Number:", key="enroll_roll")
-            
-            fac_image = None
-            if FACE_RECOGNITION_AVAILABLE:
-                st.write("Student Face Photo (Required):")
-                fac_cam = st.camera_input("Capture Student Face", key="fac_enroll_cam")
-                st.write("--- or ---")
-                fac_upload = st.file_uploader("Upload Student Face Photo:", type=["png", "jpg", "jpeg"], key="fac_enroll_upload")
-                fac_image = fac_cam or fac_upload
+                st.warning("Please enter a roll number to generate a QR code.")
 
-            if st.button("Register Student & Save Face", type="primary", key="enroll_student_btn"):
-                roll_clean = enroll_roll.strip()
-                if not roll_clean:
-                    st.warning("Please enter a valid Roll Number.")
-                elif FACE_RECOGNITION_AVAILABLE and fac_image is None:
-                    st.warning("Please capture or upload a face photo for the student.")
-                else:
-                    success, message = enroll_student(roll_clean, fac_image)
-                    if success:
-                        st.success(message)
-                        st.balloons()
-                        
-                        # Generate and show QR Code
-                        qr_img = generate_qr_code_image(roll_clean)
-                        buf = BytesIO()
-                        qr_img.save(buf, format="PNG")
-                        byte_im = buf.getvalue()
-                        
-                        st.image(byte_im, width=200, caption=f"QR Code for {roll_clean}")
-                        st.download_button(
-                            label="Download QR Code",
-                            data=byte_im,
-                            file_name=f"{roll_clean}_qrcode.png",
-                            mime="image/png",
-                            key=f"dl_{roll_clean}"
+    with tabs[3]:
+        st.header("📥 Download Student Attendance Record")
+        st.markdown("<div class='section-note'>Enter a student's <strong>Roll Number</strong> to view and download their complete attendance history across <strong>all subjects</strong>.</div>", unsafe_allow_html=True)
+
+        search_roll = st.text_input(
+            "🔍 Enter Student Roll Number",
+            placeholder="e.g. U16VH24S0208",
+            key="faculty_search_student_roll"
+        ).strip()
+
+        if search_roll:
+            all_data = load_data()
+            student_data = all_data[all_data["Roll Number"].astype(str) == search_roll]
+
+            if student_data.empty:
+                st.warning(f"⚠️ No attendance records found for Roll Number **{search_roll}**.")
+            else:
+                # Summary metrics
+                total_records = len(student_data)
+                unique_subjects = student_data["Lab"].nunique()
+                unique_dates = student_data["Date"].nunique()
+
+                st.success(f"✅ Found **{total_records}** attendance records for **{search_roll}** across **{unique_subjects}** subjects over **{unique_dates}** days.")
+
+                col_m1, col_m2, col_m3 = st.columns(3)
+                with col_m1:
+                    st.metric("Total Records", total_records)
+                with col_m2:
+                    st.metric("Subjects", unique_subjects)
+                with col_m3:
+                    st.metric("Days Attended", unique_dates)
+
+                st.divider()
+
+                # Download all records as CSV
+                csv_student = student_data.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label=f"📥 Download All Records for {search_roll} as CSV",
+                    data=csv_student,
+                    file_name=f"{search_roll}_attendance_all_subjects.csv",
+                    mime="text/csv",
+                    key=f"dl_student_all_{search_roll}",
+                    type="primary",
+                    use_container_width=True
+                )
+
+                st.divider()
+
+                # Show records grouped by subject
+                st.subheader("📚 Subject-wise Attendance Breakdown")
+                subjects = sorted(student_data["Lab"].unique())
+
+                for subject in subjects:
+                    subject_records = student_data[student_data["Lab"] == subject].sort_values("Date", ascending=False)
+                    with st.expander(f"📘 {subject} — {len(subject_records)} record(s)", expanded=True):
+                        st.dataframe(
+                            subject_records[["Date", "Time", "Lab"]],
+                            width='stretch',
+                            hide_index=True,
+                            column_config={
+                                "Date": st.column_config.TextColumn("Date", width="medium"),
+                                "Time": st.column_config.TextColumn("Time", width="medium"),
+                                "Lab": st.column_config.TextColumn("Subject", width="medium")
+                            }
                         )
-                    else:
-                        st.error(message)
-            
-            st.divider()
-            st.subheader("Registered Students List")
-            registry_df = load_student_registry()
-            if not registry_df.empty:
-                st.write(f"Total registered students: **{len(registry_df)}**")
-                
-                display_df = registry_df.copy()
-                if "Face Encoding" in display_df.columns:
-                    display_df["Face Registered"] = display_df["Face Encoding"].apply(
-                        lambda x: "🟢 Registered" if isinstance(x, str) and len(x.strip()) > 10 else "🔴 Missing"
-                    )
-                    display_columns = ["Roll Number", "Registration Date", "Face Registered"]
-                    if "Face Path" in display_df.columns:
-                        display_columns.append("Face Path")
-                    st.dataframe(display_df[display_columns], width='stretch', hide_index=True)
-                else:
-                    st.dataframe(display_df, width='stretch', hide_index=True)
-                
-                # Individual QR Code dropdown generator
-                st.subheader("View/Download Existing Student QR Code")
-                selected_student = st.selectbox("Select Student:", ["-- Select --"] + registry_df["Roll Number"].astype(str).tolist())
-                if selected_student != "-- Select --":
-                    qr_img = generate_qr_code_image(selected_student)
-                    buf = BytesIO()
-                    qr_img.save(buf, format="PNG")
-                    byte_im = buf.getvalue()
-                    
-                    st.image(byte_im, width=200, caption=f"QR Code for {selected_student}")
-                    st.download_button(
-                        label="Download QR Code",
-                        data=byte_im,
-                        file_name=f"{selected_student}_qrcode.png",
-                        mime="image/png",
-                        key=f"dl_existing_{selected_student}"
-                    )
-            else:
-                st.info("No students registered yet. Enroll a student above to get started!")
 
-            st.divider()
-            st.subheader("Generate QR Code from Roll Number")
-            generate_roll = st.text_input("Enter a roll number to generate a QR code", key="faculty_generate_qr_roll", placeholder="e.g. U16VH24S0208")
-            if st.button("Generate QR Code", key="faculty_generate_qr_btn"):
-                if generate_roll.strip():
-                    generated_qr_img = generate_qr_code_image(generate_roll.strip())
-                    buf = BytesIO()
-                    generated_qr_img.save(buf, format="PNG")
-                    generated_bytes = buf.getvalue()
-                    st.image(generated_bytes, width=240, caption=f"QR Code for {generate_roll.strip()}")
-                    st.download_button(
-                        label="Download Generated QR Code",
-                        data=generated_bytes,
-                        file_name=f"{generate_roll.strip()}_qrcode.png",
-                        mime="image/png",
-                        key=f"faculty_download_qr_{generate_roll.strip()}"
-                    )
-                else:
-                    st.warning("Please enter a roll number to generate a QR code.")
-
-        with tabs[3]:
-            st.header("📥 Download Student Attendance Record")
-            st.markdown("<div class='section-note'>Enter a student's <strong>Roll Number</strong> to view and download their complete attendance history across <strong>all subjects</strong>.</div>", unsafe_allow_html=True)
-
-            search_roll = st.text_input(
-                "🔍 Enter Student Roll Number",
-                placeholder="e.g. U16VH24S0208",
-                key="faculty_search_student_roll"
-            ).strip()
-
-            if search_roll:
-                all_data = load_data()
-                student_data = all_data[all_data["Roll Number"].astype(str) == search_roll]
-
-                if student_data.empty:
-                    st.warning(f"⚠️ No attendance records found for Roll Number **{search_roll}**.")
-                else:
-                    # Summary metrics
-                    total_records = len(student_data)
-                    unique_subjects = student_data["Lab"].nunique()
-                    unique_dates = student_data["Date"].nunique()
-
-                    st.success(f"✅ Found **{total_records}** attendance records for **{search_roll}** across **{unique_subjects}** subjects over **{unique_dates}** days.")
-
-                    col_m1, col_m2, col_m3 = st.columns(3)
-                    with col_m1:
-                        st.metric("Total Records", total_records)
-                    with col_m2:
-                        st.metric("Subjects", unique_subjects)
-                    with col_m3:
-                        st.metric("Days Attended", unique_dates)
-
-                    st.divider()
-
-                    # Download all records as CSV
-                    csv_student = student_data.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label=f"📥 Download All Records for {search_roll} as CSV",
-                        data=csv_student,
-                        file_name=f"{search_roll}_attendance_all_subjects.csv",
-                        mime="text/csv",
-                        key=f"dl_student_all_{search_roll}",
-                        type="primary",
-                        use_container_width=True
-                    )
-
-                    st.divider()
-
-                    # Show records grouped by subject
-                    st.subheader("📚 Subject-wise Attendance Breakdown")
-                    subjects = sorted(student_data["Lab"].unique())
-
-                    for subject in subjects:
-                        subject_records = student_data[student_data["Lab"] == subject].sort_values("Date", ascending=False)
-                        with st.expander(f"📘 {subject} — {len(subject_records)} record(s)", expanded=True):
-                            st.dataframe(
-                                subject_records[["Date", "Time", "Lab"]],
-                                width='stretch',
-                                hide_index=True,
-                                column_config={
-                                    "Date": st.column_config.TextColumn("Date", width="medium"),
-                                    "Time": st.column_config.TextColumn("Time", width="medium"),
-                                    "Lab": st.column_config.TextColumn("Subject", width="medium")
-                                }
-                            )
-
-                            # Per-subject CSV download
-                            csv_subject = subject_records.to_csv(index=False).encode('utf-8')
-                            st.download_button(
-                                label=f"📥 Download {subject} records",
-                                data=csv_subject,
-                                file_name=f"{search_roll}_{subject.replace(' ', '_')}_attendance.csv",
-                                mime="text/csv",
-                                key=f"dl_student_{search_roll}_{subject}"
-                            )
-            else:
-                st.info("👆 Type a student Roll Number above to search their attendance records.")
+                        # Per-subject CSV download
+                        csv_subject = subject_records.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label=f"📥 Download {subject} records",
+                            data=csv_subject,
+                            file_name=f"{search_roll}_{subject.replace(' ', '_')}_attendance.csv",
+                            mime="text/csv",
+                            key=f"dl_student_{search_roll}_{subject}"
+                        )
+        else:
+            st.info("👆 Type a student Roll Number above to search their attendance records.")
