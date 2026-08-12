@@ -10,7 +10,7 @@ from geopy.distance import geodesic
 COLLEGE_LOCATION = (15.273742673769599, 76.37739703526368)
 ALLOWED_RADIUS_METERS = 40000
 
-def is_within_range(lat, lon):
+def is_within_range(lat, lon): 
     distance = geodesic(COLLEGE_LOCATION, (lat, lon)).meters
     return distance <= ALLOWED_RADIUS_METERS, distance
 
@@ -1777,6 +1777,10 @@ with tabs[0]:
     # Initialize selected_subject in session state if not already set
     if 'selected_subject' not in st.session_state:
         st.session_state.selected_subject = "C Programing"
+    # Per-session lock: tracks which subjects the scanner already attempted
+    # to prevent the continuous rerun loop from double-marking
+    if 'scanner_marked_subjects' not in st.session_state:
+        st.session_state.scanner_marked_subjects = set()
 
     # Define subjects hierarchy
     subjects_by_year_sem = {
@@ -1825,6 +1829,8 @@ with tabs[0]:
                             type="primary" if is_selected else "secondary"
                         ):
                             st.session_state.selected_subject = sub
+                            # Clear the lock when student picks a new subject
+                            st.session_state.scanner_marked_subjects = set()
                             st.rerun()
 
     lab_choice = st.session_state.selected_subject
@@ -1999,14 +2005,18 @@ with tabs[0]:
                     if webrtc_ctx.video_processor:
                         if webrtc_ctx.video_processor.matched_roll:
                             roll = webrtc_ctx.video_processor.matched_roll
-                            success, msg = mark_attendance(roll, lab_choice)
-                            if success:
-                                play_siri_voice(True, roll)
-                                st.balloons()
-                                show_scan_popup(True, msg, roll)
-                            else:
-                                play_siri_voice(False, roll)
-                                show_scan_popup(False, msg, roll)
+                            # Session lock: only attempt marking once per subject per session
+                            lock_key = f"{roll}|{lab_choice}"
+                            if lock_key not in st.session_state.scanner_marked_subjects:
+                                st.session_state.scanner_marked_subjects.add(lock_key)
+                                success, msg = mark_attendance(roll, lab_choice)
+                                if success:
+                                    play_siri_voice(True, roll)
+                                    st.balloons()
+                                    show_scan_popup(True, msg, roll)
+                                else:
+                                    play_siri_voice(False, roll)
+                                    show_scan_popup(False, msg, roll)
                             webrtc_ctx.video_processor.matched_roll = None  # Reset to prevent continuous triggers
                             st.rerun()
                         else:
