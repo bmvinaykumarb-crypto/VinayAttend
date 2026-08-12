@@ -1,5 +1,4 @@
 from streamlit.runtime import scriptrunner
-from streamlit.runtime import scriptrunner
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -8,7 +7,7 @@ from streamlit_js_eval import get_geolocation, streamlit_js_eval
 from geopy.distance import geodesic
 
 COLLEGE_LOCATION = (15.273742673769599, 76.37739703526368)
-ALLOWED_RADIUS_METERS = 40000
+ALLOWED_RADIUS_METERS = 500  # 500 metres — must be on/near college campus
 
 def is_within_range(lat, lon): 
     distance = geodesic(COLLEGE_LOCATION, (lat, lon)).meters
@@ -2019,10 +2018,7 @@ with tabs[0]:
                                     show_scan_popup(False, msg, roll)
                             webrtc_ctx.video_processor.matched_roll = None  # Reset to prevent continuous triggers
                             st.rerun()
-                        else:
-                            import time
-                            time.sleep(1.0)
-                            st.rerun()
+                        # No match yet — do NOT rerun here to avoid infinite rerun storm
                             
         else:
             st.subheader("📷 QR Code Scanner")
@@ -2099,16 +2095,24 @@ if st.session_state.user_role == "student":
         current_student = st.session_state.get("student_roll", "")
         if current_student:
             st.markdown(f"<div class='section-note'>Viewing daily subject-wise attendance history for Student Roll Number: <strong>{current_student}</strong>.</div>", unsafe_allow_html=True)
-            daily_df, summary = get_student_daily_records(current_student)
-            
+            daily_df, subj_summary = get_student_daily_records(current_student)
+
+            # Compute summary metrics from the returned DataFrames
+            total_days = daily_df["Date"].nunique() if not daily_df.empty else 0
+            total_sessions = len(daily_df) if not daily_df.empty else 0
+            unique_labs = daily_df["Subject"].nunique() if not daily_df.empty else 0
+
             m_col1, m_col2, m_col3 = st.columns(3)
-            m_col1.metric("Total Days Attended", summary.get("total_days_attended", 0))
-            m_col2.metric("Total Sessions Marked", summary.get("total_sessions", 0))
-            m_col3.metric("Distinct Subjects", summary.get("unique_labs", 0))
-            
+            m_col1.metric("Total Days Attended", total_days)
+            m_col2.metric("Total Sessions Marked", total_sessions)
+            m_col3.metric("Distinct Subjects", unique_labs)
+
             st.divider()
             if not daily_df.empty:
                 st.dataframe(daily_df, use_container_width=True)
+                if not subj_summary.empty:
+                    st.subheader("📚 Subject-wise Summary")
+                    st.dataframe(subj_summary, use_container_width=True, hide_index=True)
             else:
                 st.info("No attendance records found for your roll number yet.")
         else:
@@ -2235,8 +2239,8 @@ else:
             subject_records = display_df[display_df["Lab"] == subject].sort_values("Time", ascending=False)
             with st.expander(f"📚 {subject} ({len(subject_records)} students)", expanded=True):
                 st.dataframe(
-                    subject_records[["Roll Number", "Time", "Lab"]], 
-                    width='stretch', 
+                    subject_records[["Roll Number", "Time", "Lab"]],
+                    use_container_width=True,
                     hide_index=True,
                     column_config={
                         "Roll Number": st.column_config.TextColumn("Student Roll Number", width="medium"),
@@ -2369,7 +2373,7 @@ else:
             for date in dates:
                 date_records = display_df_all[display_df_all["Date"] == date].sort_values("Time", ascending=False)
                 with st.expander(f"📅 {date} ({len(date_records)} records)", expanded=False):
-                    st.dataframe(date_records[["Roll Number", "Time", "Lab"]], width='stretch', hide_index=True)
+                    st.dataframe(date_records[["Roll Number", "Time", "Lab"]], use_container_width=True, hide_index=True)
     
     with tabs[2]:
         st.header("🧑‍🎓 Student Face & QR Registry")
@@ -2429,9 +2433,9 @@ else:
                 display_columns = ["Roll Number", "Registration Date", "Face Registered"]
                 if "Face Path" in display_df.columns:
                     display_columns.append("Face Path")
-                st.dataframe(display_df[display_columns], width='stretch', hide_index=True)
+                st.dataframe(display_df[display_columns], use_container_width=True, hide_index=True)
             else:
-                st.dataframe(display_df, width='stretch', hide_index=True)
+                st.dataframe(display_df, use_container_width=True, hide_index=True)
             
             # Individual QR Code dropdown generator
             st.subheader("View/Download Existing Student QR Code")
@@ -2530,7 +2534,7 @@ else:
                     with st.expander(f"📘 {subject} — {len(subject_records)} record(s)", expanded=True):
                         st.dataframe(
                             subject_records[["Date", "Time", "Lab"]],
-                            width='stretch',
+                            use_container_width=True,
                             hide_index=True,
                             column_config={
                                 "Date": st.column_config.TextColumn("Date", width="medium"),
