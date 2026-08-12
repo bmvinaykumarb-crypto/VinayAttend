@@ -570,35 +570,34 @@ def load_data():
 def mark_attendance(roll_number, lab):
     if not roll_number:
         return False, "Roll number cannot be empty."
-    
+
+    # Normalise inputs to avoid whitespace / case mismatches
+    roll_number = str(roll_number).strip()
+    lab = str(lab).strip()
+
     df = load_data()
     now = datetime.now()
     current_date = now.strftime("%Y-%m-%d")
     current_time = now.strftime("%H:%M:%S")
-    day_of_week = now.weekday()  # 0=Monday, 4=Friday, 5=Saturday
-    
-    # Check if already marked for this lab today
-    if not df[(df["Roll Number"] == roll_number) & (df["Date"] == current_date) & (df["Lab"] == lab)].empty:
+
+    # Normalise the dataframe columns for comparison
+    df["Roll Number"] = df["Roll Number"].astype(str).str.strip()
+    df["Lab"] = df["Lab"].astype(str).str.strip()
+
+    # Check if already marked for this exact lab today (per-subject duplicate guard)
+    already_marked = df[
+        (df["Roll Number"].str.upper() == roll_number.upper()) &
+        (df["Date"] == current_date) &
+        (df["Lab"].str.upper() == lab.upper())
+    ]
+    if not already_marked.empty:
         return False, f"Attendance already marked for {roll_number} in {lab} today."
-    
-    existing_today = df[(df["Roll Number"] == roll_number) & (df["Date"] == current_date)]
-    existing_count = len(existing_today)
-    
-    # On Fridays (4), Saturdays (5), and Sundays (6), allow up to 2 attendances
-    if day_of_week in [4, 5, 6]:  # Friday, Saturday, Sunday
-        max_attendances = 2
-    else:
-        max_attendances = 1
-    
-    if existing_count >= max_attendances:
-        existing_labs = existing_today["Lab"].unique()
-        existing_labs_str = ", ".join(existing_labs)
-        return False, f"You can't attend {lab} because you have already reached the maximum attendances ({max_attendances}) for today. Recorded for: {existing_labs_str}."
-        
+
+    # All checks passed — record the attendance
     with get_db_connection() as conn:
         conn.execute(
             "INSERT INTO attendance (roll_number, date, time, lab) VALUES (?, ?, ?, ?)",
-            (str(roll_number), current_date, current_time, lab)
+            (roll_number, current_date, current_time, lab)
         )
         conn.commit()
     return True, f"Successfully marked attendance for {roll_number} in {lab} at {current_time}."
